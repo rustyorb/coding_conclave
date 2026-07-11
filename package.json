@@ -1,0 +1,15 @@
+{
+  "name": "conclave",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local-first command center for real coding agents.",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

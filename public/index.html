@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0d0b18">
+  <title>Conclave · Agent command center</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="ambient ambient-one"></div>
+  <div class="ambient ambient-two"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Conclave home">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 36 36"><path d="M18 3 31 10.5v15L18 33 5 25.5v-15L18 3Z"/><path d="m12 14 6-3.5 6 3.5v7l-6 3.5-6-3.5v-7Z"/></svg>
+      </span>
+      <span><strong>Conclave</strong><small>LOCAL AGENT ROOM</small></span>
+    </a>
+    <div class="room-heading">
+      <span class="live-dot"></span>
+      <div><strong id="roomName">Engineering room</strong><small id="roomMode">Operator directed</small></div>
+    </div>
+    <div class="top-actions">
+      <button class="icon-button" id="refreshButton" title="Refresh workspace" aria-label="Refresh workspace">
+        <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.34 5.66M20 4v7h-7"/></svg>
+      </button>
+      <button class="button ghost" id="consoleButton"><span class="terminal-glyph">›_</span> Console</button>
+      <button class="button danger" id="pauseButton">Pause room</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <aside class="panel agent-rail">
+      <div class="panel-title"><span>AGENTS</span><button class="text-button" id="scanButton">Rescan</button></div>
+      <div id="agentList" class="agent-list"></div>
+      <div class="rail-footer">
+        <div class="limit-row"><span>Concurrent runs</span><strong id="concurrency">0 / 3</strong></div>
+        <div class="meter"><i id="concurrencyMeter"></i></div>
+        <p>Availability is checked from executables on this machine. No simulated agents.</p>
+      </div>
+    </aside>
+
+    <section class="room-column">
+      <nav class="room-tabs" aria-label="Room views">
+        <button class="tab active" data-view="feed">Room feed <span id="messageCount">0</span></button>
+        <button class="tab" data-view="tasks">Task board <span id="taskCount">0</span></button>
+        <button class="primary-mini" id="newTaskButton">+ New task</button>
+      </nav>
+      <div id="feedView" class="view active">
+        <div id="feed" class="feed"></div>
+        <form id="composer" class="composer">
+          <textarea id="messageInput" rows="2" placeholder="Message the room, or use @codex, @claude, @gemini…" required></textarea>
+          <div class="composer-row">
+            <div class="composer-hints"><span>@ mention routes to a real agent</span><span>Shift + Enter for newline</span></div>
+            <div class="composer-controls">
+              <select id="messageAccess" aria-label="Agent access for mentioned agents">
+                <option value="read-only">Read only</option>
+                <option value="workspace-write">Request write access</option>
+              </select>
+              <button class="send-button" type="submit" aria-label="Send message">
+                <svg viewBox="0 0 24 24"><path d="m4 4 17 8-17 8 3-8-3-8Zm3 8h14"/></svg>
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+      <div id="tasksView" class="view">
+        <div id="taskBoard" class="task-board"></div>
+      </div>
+    </section>
+
+    <aside class="inspector-column">
+      <section class="panel approval-panel">
+        <div class="panel-title"><span>APPROVAL CENTER</span><span id="approvalCount" class="count-badge">0</span></div>
+        <div id="approvals" class="approval-list"></div>
+      </section>
+      <section class="panel workspace-panel">
+        <div class="panel-title"><span>WORKSPACE</span><button class="text-button" id="changeWorkspace">Change</button></div>
+        <button class="workspace-path" id="workspacePath" title="Change workspace"></button>
+        <div class="workspace-summary">
+          <div><strong id="fileCount">0</strong><span>changed files</span></div>
+          <div><strong id="lineCount">0</strong><span>diff lines</span></div>
+        </div>
+        <div id="fileList" class="file-list"></div>
+        <button class="button wide ghost" id="diffButton">Inspect current diff</button>
+      </section>
+      <section class="panel evidence-panel">
+        <div class="panel-title"><span>ROOM HEALTH</span></div>
+        <div id="roomHealth"></div>
+      </section>
+    </aside>
+  </main>
+
+  <dialog id="taskDialog" class="dialog">
+    <form id="taskForm" method="dialog">
+      <div class="dialog-head"><div><span class="eyebrow">DELEGATE WORK</span><h2>Create a task</h2></div><button type="button" class="close-button" data-close="taskDialog">×</button></div>
+      <label>Task title<input name="title" maxlength="160" placeholder="Inspect the authentication flow" required></label>
+      <label>Objective<textarea name="objective" rows="6" placeholder="Describe the deliverable, evidence, and completion criteria…" required></textarea></label>
+      <div class="form-grid">
+        <label>Assigned agent<select name="agentId" id="taskAgent" required></select></label>
+        <label>Workspace access<select name="accessMode"><option value="read-only">Read only · starts now</option><option value="workspace-write">Workspace write · requires approval</option></select></label>
+      </div>
+      <div class="notice"><strong>Explicit handoff</strong><span>Conclave sends only this task, the workspace path, and its granted access mode.</span></div>
+      <div class="dialog-actions"><button type="button" class="button ghost" data-close="taskDialog">Cancel</button><button class="button primary" type="submit">Create task</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="consoleDialog" class="dialog console-dialog">
+    <div class="dialog-head"><div><span class="eyebrow">ATTRIBUTABLE OUTPUT</span><h2>Execution console</h2></div><button type="button" class="close-button" data-close="consoleDialog">×</button></div>
+    <div id="executionTabs" class="execution-tabs"></div>
+    <pre id="consoleOutput" class="console-output">No executions yet.</pre>
+    <form id="commandForm" class="command-form">
+      <input name="command" placeholder="npm test" aria-label="Command" required>
+      <input name="purpose" placeholder="Purpose: run the test suite" aria-label="Command purpose" required>
+      <button class="button primary" type="submit">Request run</button>
+    </form>
+    <p class="fine-print">Commands never run from this field until explicitly approved in the Approval Center.</p>
+  </dialog>
+
+  <dialog id="diffDialog" class="dialog console-dialog">
+    <div class="dialog-head"><div><span class="eyebrow">GIT WORKSPACE</span><h2>Current diff</h2></div><button type="button" class="close-button" data-close="diffDialog">×</button></div>
+    <pre id="diffOutput" class="console-output diff-output">No tracked diff.</pre>
+  </dialog>
+
+  <dialog id="workspaceDialog" class="dialog">
+    <form id="workspaceForm" method="dialog">
+      <div class="dialog-head"><div><span class="eyebrow">PROJECT SCOPE</span><h2>Open workspace</h2></div><button type="button" class="close-button" data-close="workspaceDialog">×</button></div>
+      <label>Absolute directory path<input name="path" placeholder="C:\path\to\project" required></label>
+      <div class="notice warning"><strong>Scope changes immediately</strong><span>New agent runs and approved commands will use this directory.</span></div>
+      <div class="dialog-actions"><button type="button" class="button ghost" data-close="workspaceDialog">Cancel</button><button class="button primary" type="submit">Open workspace</button></div>
+    </form>
+  </dialog>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

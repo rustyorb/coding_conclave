@@ -2,7 +2,45 @@
 
 **A local-first collaboration environment where multiple AI coding agents can communicate, coordinate, and work alongside a human operator.**
 
-> Project status: concept and initial specification. No agent integration should be considered functional until it has been implemented and verified against the real underlying tool.
+> Project status: runnable MVP foundation. Codex and Claude Code have been verified end to end as real subprocesses in this workspace. Gemini CLI has a current adapter and is detected locally, but remains marked unverified until it completes a real run. Availability and output are never simulated.
+
+## Run the local app
+
+Conclave currently has no third-party runtime dependencies. It requires Node.js 22 or newer.
+
+```powershell
+npm start
+```
+
+Open `http://127.0.0.1:4317`. By default, Conclave scopes the room to the directory from which it is launched. Set `CONCLAVE_WORKSPACE` to start with another project:
+
+```powershell
+$env:CONCLAVE_WORKSPACE = 'C:\path\to\project'
+npm start
+```
+
+Run the regression suite with:
+
+```powershell
+npm test
+```
+
+### Implemented in this slice
+
+- Live detection and version reporting for installed Codex, Claude Code, and Gemini CLI executables, distinct from verified provider connectivity
+- Modular adapter contract with provider-specific headless, structured-output, cancellation, and access flags
+- Read-only agent tasks and approval-gated workspace-write tasks
+- Real-time subprocess output over Server-Sent Events
+- Shared room messages with direct `@codex`, `@claude`, and `@gemini` routing
+- Persistent tasks, messages, approvals, executions, and audit events in `.conclave/state.json`
+- Room pause, individual interruption, task review, and configurable concurrency/timeout limits
+- Approval-gated local command console
+- Git working-tree status and diff visibility
+- Common secret-pattern redaction before output reaches logs or the UI
+
+### Current safety boundary
+
+The user approves a write-capable agent invocation before it starts. The adapter then relies on the provider CLI's own workspace permission mode (`workspace-write`, `acceptEdits`, or `auto_edit`) while Conclave records the invocation and resulting Git diff. Per-tool interactive approval inside a running provider session is not yet normalized across providers, so the UI does not claim that capability. Use read-only mode for inspection and reserve write mode for trusted workspaces.
 
 ## Overview
 

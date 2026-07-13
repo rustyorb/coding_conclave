@@ -6,8 +6,23 @@ import { redactSecrets } from './redact.js';
 export class ProcessManager {
   constructor({ onEvent, timeoutMinutes = 20 } = {}) {
     this.running = new Map();
+    this.reserved = 0;
     this.onEvent = onEvent || (() => {});
     this.timeoutMinutes = timeoutMinutes;
+  }
+
+  // Slots that are committed to but not yet spawned. Counted alongside running
+  // children so concurrent startTask calls cannot both pass the limit check.
+  get load() {
+    return this.running.size + this.reserved;
+  }
+
+  reserve() {
+    this.reserved += 1;
+  }
+
+  release() {
+    if (this.reserved > 0) this.reserved -= 1;
   }
 
   start({ taskId = null, agentId = null, kind = 'agent', invocation, cwd, purpose }) {
@@ -25,7 +40,7 @@ export class ProcessManager {
       agentId,
       kind,
       purpose,
-      command: [invocation.command, ...invocation.args].join(' '),
+      command: redactSecrets([invocation.command, ...invocation.args].join(' ')),
       cwd,
       status: 'running',
       exitCode: null,

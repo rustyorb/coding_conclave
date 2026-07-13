@@ -129,6 +129,13 @@ select, input, dialog textarea { color: var(--text); background: #12101d; border
 .approval-command { font-family: Consolas, monospace; color: #b8b0c9; background: rgba(0,0,0,.22); border-radius: 6px; padding: 7px; margin-top: 8px; font-size: 9px; max-height: 54px; overflow: auto; }
 .approval-actions { display: flex; gap: 7px; margin-top: 9px; }.approval-actions button { flex: 1; }
 .blank-state { color: #6d677b; font-size: 10px; text-align: center; padding: 16px 6px; }
+.policy-form { display: flex; flex-direction: column; gap: 10px; font-size: 11px; }
+.policy-form label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); }
+.policy-form .policy-check { flex-direction: row; align-items: center; gap: 8px; }
+.policy-form input[type='checkbox'] { accent-color: var(--purple); }
+#autopilotStatus.on { background: rgba(156,124,255,.14); color: var(--purple); }
+.approval-card.auto { border-color: rgba(156,124,255,.45); background: rgba(156,124,255,.07); }
+.autopilot-badge { display: inline-block; margin-top: 6px; padding: 2px 8px; border-radius: 999px; font-size: 10px; letter-spacing: .04em; color: var(--purple); border: 1px solid rgba(156,124,255,.5); }
 .workspace-path { width: 100%; border: 0; background: none; color: #bdb7cb; text-align: left; padding: 7px 0 11px; font-family: Consolas, monospace; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 .workspace-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }.workspace-summary div { padding: 10px; background: rgba(255,255,255,.025); border: 1px solid var(--border); border-radius: 9px; }
 .workspace-summary strong { display: block; font-size: 17px; }.workspace-summary span { color: var(--muted); font-size: 9px; }

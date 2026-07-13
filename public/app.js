@@ -42,9 +42,17 @@ async function refresh({ keepScroll = true } = {}) {
   if (!keepScroll || nearBottom) requestAnimationFrame(() => { feed.scrollTop = feed.scrollHeight; });
 }
 
+let refreshDeadline = 0;
 function scheduleRefresh() {
+  const nowMs = Date.now();
+  // Trailing 90ms debounce, but never defer past a 500ms max-wait so a steady
+  // stream of execution.output events can't starve the UI indefinitely.
+  if (!refreshTimer) refreshDeadline = nowMs + 500;
   clearTimeout(refreshTimer);
-  refreshTimer = setTimeout(() => refresh().catch((error) => toast(error.message, true)), 90);
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null;
+    refresh().catch((error) => toast(error.message, true));
+  }, Math.max(0, Math.min(90, refreshDeadline - nowMs)));
 }
 
 function initials(name) {
@@ -61,8 +69,16 @@ function renderAgents() {
       </div>
       <div class="agent-action">${esc(agent.lastAction)}</div>
     </article>`).join('');
-  $('#taskAgent').innerHTML = state.agents.map((agent) => `<option value="${esc(agent.id)}" ${agent.status !== 'installed' ? 'disabled' : ''}>${esc(agent.name)} · ${esc(agent.connection === 'verified' ? 'verified' : agent.status)}</option>`).join('');
-  const running = state.agents.filter((agent) => agent.activity === 'running').length;
+  const agentSelect = $('#taskAgent');
+  const previousAgent = agentSelect.value;
+  agentSelect.innerHTML = state.agents.map((agent) => `<option value="${esc(agent.id)}" ${agent.status !== 'installed' ? 'disabled' : ''}>${esc(agent.name)} · ${esc(agent.connection === 'verified' ? 'verified' : agent.status)}</option>`).join('');
+  // Preserve the user's in-progress selection across SSE-driven re-renders.
+  if (previousAgent && [...agentSelect.options].some((option) => option.value === previousAgent && !option.disabled)) {
+    agentSelect.value = previousAgent;
+  }
+  // Match the server limit, which counts every running execution (agent runs and
+  // approved shell commands), not just agents flagged 'running'.
+  const running = state.executions.filter((execution) => execution.status === 'running').length;
   const maximum = state.room.limits.maxConcurrentRuns;
   $('#concurrency').textContent = `${running} / ${maximum}`;
   $('#concurrencyMeter').style.width = `${Math.min(100, running / maximum * 100)}%`;
@@ -85,29 +101,68 @@ function taskLane(title, statuses) {
   return `<section class="task-lane"><div class="lane-head"><span>${title}</span><span>${tasks.length}</span></div>${tasks.map((task) => {
     const agent = state.agents.find((entry) => entry.id === task.agentId);
     const review = task.status === 'review-required' ? `<div class="task-actions"><button class="tiny-button accept" data-review="${task.id}" data-accepted="true">Accept</button><button class="tiny-button reject" data-review="${task.id}" data-accepted="false">Reject</button></div>` : '';
-    const cancel = task.status === 'active' ? `<div class="task-actions"><button class="tiny-button reject" data-cancel="${task.id}">Interrupt</button></div>` : '';
-    return `<article class="task-card"><h3>${esc(task.title)}</h3><p>${esc(task.objective)}</p><div class="task-meta"><span>${esc(agent?.name || task.agentId)}</span><span>${esc(task.status)}</span></div>${review}${cancel}</article>`;
+    const cancel = task.status === 'active' ? `<div class="task-actions"><button class="tiny-button reject" data-cancel="${task.id}">Interrupt</button></div>`
+      : task.status === 'queued' ? `<div class="task-actions"><button class="tiny-button reject" data-cancel="${task.id}">Remove</button></div>` : '';
+    const retry = ['blocked', 'failed', 'cancelled', 'rejected'].includes(task.status) ? `<div class="task-actions"><button class="tiny-button accept" data-retry="${task.id}">Retry</button></div>` : '';
+    const blocker = task.blocker ? `<div class="task-meta"><span>${esc(task.blocker)}</span></div>` : '';
+    const waits = (task.dependencies || []).map((depId) => state.tasks.find((entry) => entry.id === depId) || { id: depId })
+      .filter((dep) => dep.status !== 'completed');
+    const deps = waits.length && ['queued', 'waiting', 'ready'].includes(task.status)
+      ? `<div class="task-meta"><span>waiting on: ${waits.map((dep) => esc((dep.title || dep.id).slice(0, 24))).join(', ')}</span></div>` : '';
+    const tries = task.attempts ? `<span>retry ${task.attempts}${task.retryCap ? `/${task.retryCap}` : ''}</span>` : '';
+    return `<article class="task-card"><h3>${esc(task.title)}</h3><p>${esc(task.objective)}</p><div class="task-meta"><span>${esc(agent?.name || task.agentId)}</span><span>${esc(task.status)}</span>${tries}</div>${blocker}${deps}${review}${cancel}${retry}</article>`;
   }).join('') || '<div class="blank-state">No tasks</div>'}</section>`;
 }
 
 function renderTasks() {
   $('#taskCount').textContent = state.tasks.length;
   $('#taskBoard').innerHTML = [
-    taskLane('Queued', ['proposed', 'ready', 'waiting']),
+    taskLane('Queued', ['proposed', 'ready', 'waiting', 'queued']),
     taskLane('In motion', ['active', 'review-required']),
     taskLane('Resolved', ['completed', 'failed', 'cancelled', 'rejected', 'blocked'])
   ].join('');
 }
 
+function renderTaskDependencyOptions() {
+  const select = $('#taskDeps');
+  // Preserve the user's in-progress selection across SSE-driven re-renders.
+  const previous = [...select.selectedOptions].map((option) => option.value);
+  select.innerHTML = state.tasks.map((task) => `<option value="${esc(task.id)}">${esc(task.title)} · ${esc(task.status)}</option>`).join('');
+  for (const option of select.options) option.selected = previous.includes(option.value);
+}
+
 function renderApprovals() {
   const pending = state.approvals.filter((entry) => entry.status === 'pending');
+  const auto = state.approvals.filter((entry) => entry.decidedBy === 'autopilot' && entry.status === 'auto-approved').slice(0, 5);
   $('#approvalCount').textContent = pending.length;
-  $('#approvals').innerHTML = pending.length ? pending.map((approval) => `
+  $('#approvals').innerHTML = pending.length || auto.length ? pending.map((approval) => `
     <article class="approval-card">
       <h3>${esc(approval.title)}</h3><p>${esc(approval.detail)}</p>
       <div class="approval-command">${esc(approval.command)}<br><span>${esc(approval.cwd)}</span></div>
       <div class="approval-actions"><button class="tiny-button reject" data-approval="${approval.id}" data-decision="denied">Deny</button><button class="tiny-button accept" data-approval="${approval.id}" data-decision="approved">Approve</button></div>
+    </article>`).join('') + auto.map((approval) => `
+    <article class="approval-card auto">
+      <h3>${esc(approval.title)}</h3>
+      <div class="approval-command">${esc(approval.command)}<br><span>${esc(approval.cwd)}</span></div>
+      <div class="autopilot-badge">auto-approved by autopilot: ${esc(approval.reason)}</div>
     </article>`).join('') : '<div class="blank-state">No actions are waiting.<br>You retain final control.</div>';
+}
+
+function renderPolicy() {
+  $('#autopilotStatus').textContent = state.policy.enabled ? 'on' : 'off';
+  $('#autopilotStatus').classList.toggle('on', state.policy.enabled);
+  const used = state.approvals.filter((entry) => entry.decidedBy === 'autopilot' && entry.status === 'auto-approved'
+    && Date.parse(entry.decidedAt) > Date.now() - 3_600_000).length;
+  $('#policyBudget').textContent = `${used} of ${state.policy.maxAutoApprovalsPerHour} auto-approvals used this hour · auto-accepted reviews are uncapped`;
+  const form = $('#policyForm');
+  if (form.contains(document.activeElement)) return;
+  $('#policyEnabled').checked = state.policy.enabled;
+  $('#policyWrites').value = state.policy.autoApproveWrites;
+  $('#policyAllowlist').value = state.policy.commandAllowlist.join('\n');
+  $('#policyReviews').checked = state.policy.autoAcceptReviews;
+  $('#policyRetry').checked = state.policy.autoRetry.enabled;
+  $('#policyRetryMax').value = state.policy.autoRetry.maxAttempts;
+  $('#policyRate').value = state.policy.maxAutoApprovalsPerHour;
 }
 
 function renderWorkspace() {
@@ -124,9 +179,12 @@ function renderExecutions() {
   if (!activeExecutionId && state.executions.length) activeExecutionId = state.executions[0].id;
   const active = state.executions.find((entry) => entry.id === activeExecutionId) || state.executions[0];
   $('#executionTabs').innerHTML = state.executions.map((execution) => `<button class="execution-tab ${execution.id === active?.id ? 'active' : ''}" data-execution="${execution.id}">${esc(execution.agentId || 'command')} · ${esc(execution.status)}</button>`).join('');
-  $('#consoleOutput').textContent = active ? `${active.command}\n\n${active.output || 'Process started; waiting for output…'}` : 'No executions yet.';
   const output = $('#consoleOutput');
-  output.scrollTop = output.scrollHeight;
+  // Only auto-scroll when the user is already at the bottom, so scrolling up to
+  // read earlier output during a live run isn't yanked back on the next line.
+  const nearBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 100;
+  $('#consoleOutput').textContent = active ? `${active.command}\n\n${active.output || 'Process started; waiting for output…'}` : 'No executions yet.';
+  if (nearBottom) output.scrollTop = output.scrollHeight;
 }
 
 function renderHealth() {
@@ -145,7 +203,7 @@ function render() {
   $('#roomMode').textContent = state.room.mode.replace('-', ' ');
   $('#pauseButton').textContent = state.room.paused ? 'Resume room' : 'Pause room';
   $('#pauseButton').classList.toggle('danger', !state.room.paused);
-  renderAgents(); renderFeed(); renderTasks(); renderApprovals(); renderWorkspace(); renderExecutions(); renderHealth();
+  renderAgents(); renderFeed(); renderTasks(); renderTaskDependencyOptions(); renderApprovals(); renderPolicy(); renderWorkspace(); renderExecutions(); renderHealth();
 }
 
 $('#composer').addEventListener('submit', async (event) => {
@@ -168,8 +226,11 @@ $('#taskForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   const formElement = event.currentTarget;
   const form = new FormData(formElement);
+  // Object.fromEntries collapses multi-selects to their last value.
+  const payload = Object.fromEntries(form);
+  payload.dependencies = form.getAll('dependencies');
   try {
-    await api('/api/tasks', { method: 'POST', body: JSON.stringify(Object.fromEntries(form)) });
+    await api('/api/tasks', { method: 'POST', body: JSON.stringify(payload) });
     $('#taskDialog').close(); formElement.reset(); toast('Task created'); await refresh();
   } catch (error) { toast(error.message, true); }
 });
@@ -193,6 +254,25 @@ $('#workspaceForm').addEventListener('submit', async (event) => {
   } catch (error) { toast(error.message, true); }
 });
 
+$('#policyForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  // An empty number input submits '' and Number('') === 0, which validatePolicy
+  // rejects — keep the saved value instead of failing the whole policy save.
+  const retryMax = $('#policyRetryMax').value.trim();
+  const rate = $('#policyRate').value.trim();
+  try {
+    await api('/api/policy', { method: 'POST', body: JSON.stringify({
+      enabled: $('#policyEnabled').checked,
+      autoApproveWrites: $('#policyWrites').value,
+      commandAllowlist: $('#policyAllowlist').value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
+      autoAcceptReviews: $('#policyReviews').checked,
+      autoRetry: { enabled: $('#policyRetry').checked, maxAttempts: retryMax === '' ? state.policy.autoRetry.maxAttempts : Number(retryMax) },
+      maxAutoApprovalsPerHour: rate === '' ? state.policy.maxAutoApprovalsPerHour : Number(rate)
+    }) });
+    toast('Autopilot policy saved'); await refresh();
+  } catch (error) { toast(error.message, true); }
+});
+
 document.addEventListener('click', async (event) => {
   const button = event.target.closest('button');
   if (!button) return;
@@ -208,20 +288,31 @@ document.addEventListener('click', async (event) => {
       toast(`Action ${button.dataset.decision}`); await refresh();
     }
     if (button.dataset.cancel) {
-      await api(`/api/tasks/${button.dataset.cancel}/cancel`, { method: 'POST', body: '{}' }); toast('Interrupt requested');
+      const result = await api(`/api/tasks/${button.dataset.cancel}/cancel`, { method: 'POST', body: '{}' });
+      toast(result.status === 'cancelled' ? 'Task removed from queue' : 'Interrupt requested'); await refresh();
     }
     if (button.dataset.review) {
       await api(`/api/tasks/${button.dataset.review}/review`, { method: 'POST', body: JSON.stringify({ accepted: button.dataset.accepted === 'true' }) });
       toast(button.dataset.accepted === 'true' ? 'Task accepted' : 'Task rejected'); await refresh();
+    }
+    if (button.dataset.retry) {
+      await api(`/api/tasks/${button.dataset.retry}/retry`, { method: 'POST', body: '{}' });
+      toast('Task retried'); await refresh();
     }
     if (button.dataset.execution) { activeExecutionId = button.dataset.execution; renderExecutions(); }
   } catch (error) { toast(error.message, true); }
 });
 
 $('#newTaskButton').addEventListener('click', () => $('#taskDialog').showModal());
-$('#consoleButton').addEventListener('click', () => { renderExecutions(); $('#consoleDialog').showModal(); });
+$('#consoleButton').addEventListener('click', () => {
+  if (!state) return toast('Still loading room state…', true);
+  renderExecutions(); $('#consoleDialog').showModal();
+});
 $('#diffButton').addEventListener('click', () => $('#diffDialog').showModal());
-$('#changeWorkspace').addEventListener('click', () => { $('#workspaceForm input').value = state.room.workspace; $('#workspaceDialog').showModal(); });
+$('#changeWorkspace').addEventListener('click', () => {
+  if (!state) return toast('Still loading room state…', true);
+  $('#workspaceForm input').value = state.room.workspace; $('#workspaceDialog').showModal();
+});
 $('#workspacePath').addEventListener('click', () => $('#changeWorkspace').click());
 $('#refreshButton').addEventListener('click', async () => { try { await api('/api/workspace/refresh', { method: 'POST', body: '{}' }); await refresh(); toast('Workspace refreshed'); } catch (error) { toast(error.message, true); } });
 $('#scanButton').addEventListener('click', async () => {
@@ -229,6 +320,7 @@ $('#scanButton').addEventListener('click', async () => {
   catch (error) { toast(error.message, true); }
 });
 $('#pauseButton').addEventListener('click', async () => {
+  if (!state) return toast('Still loading room state…', true);
   try { await api(`/api/room/${state.room.paused ? 'resume' : 'pause'}`, { method: 'POST', body: '{}' }); await refresh(); toast(state.room.paused ? 'Room paused' : 'Room resumed'); } catch (error) { toast(error.message, true); }
 });
 

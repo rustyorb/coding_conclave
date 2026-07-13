@@ -77,6 +77,28 @@
         <div class="panel-title"><span>APPROVAL CENTER</span><span id="approvalCount" class="count-badge">0</span></div>
         <div id="approvals" class="approval-list"></div>
       </section>
+      <section class="panel autopilot-panel">
+        <div class="panel-title"><span>AUTOPILOT</span><span id="autopilotStatus" class="count-badge">off</span></div>
+        <form id="policyForm" class="policy-form">
+          <label class="policy-check"><input type="checkbox" id="policyEnabled"><span>Enable autopilot</span></label>
+          <label>Auto-approve write access
+            <select id="policyWrites">
+              <option value="off">Off · always ask</option>
+              <option value="verified-agents">Verified agents only</option>
+              <option value="all-agents">All installed agents</option>
+            </select>
+          </label>
+          <label>Command allowlist <small>one pattern per line · * wildcard, exact otherwise · case-sensitive</small>
+            <textarea id="policyAllowlist" rows="3" placeholder="npm test&#10;git status*"></textarea>
+          </label>
+          <label class="policy-check"><input type="checkbox" id="policyReviews"><span>Auto-accept successful runs</span></label>
+          <label class="policy-check"><input type="checkbox" id="policyRetry"><span>Auto-retry failed runs</span></label>
+          <label>Max automatic retries per task<input type="number" id="policyRetryMax" min="1" max="5" required></label>
+          <label>Max auto-approvals per hour<input type="number" id="policyRate" min="1" max="500" required></label>
+          <p id="policyBudget" class="fine-print"></p>
+          <button class="button wide primary" type="submit">Save policy</button>
+        </form>
+      </section>
       <section class="panel workspace-panel">
         <div class="panel-title"><span>WORKSPACE</span><button class="text-button" id="changeWorkspace">Change</button></div>
         <button class="workspace-path" id="workspacePath" title="Change workspace"></button>
@@ -102,6 +124,7 @@
       <div class="form-grid">
         <label>Assigned agent<select name="agentId" id="taskAgent" required></select></label>
         <label>Workspace access<select name="accessMode"><option value="read-only">Read only · starts now</option><option value="workspace-write">Workspace write · requires approval</option></select></label>
+        <label>Depends on <small>optional · Ctrl/Cmd-click for multiple</small><select name="dependencies" id="taskDeps" multiple size="4"></select></label>
       </div>
       <div class="notice"><strong>Explicit handoff</strong><span>Conclave sends only this task, the workspace path, and its granted access mode.</span></div>
       <div class="dialog-actions"><button type="button" class="button ghost" data-close="taskDialog">Cancel</button><button class="button primary" type="submit">Create task</button></div>

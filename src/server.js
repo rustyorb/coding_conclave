@@ -5,6 +5,8 @@ import { readFile, stat } from 'node:fs/promises';
 import { detectAgents, buildAgentInvocation, summarizeAgentEvent } from './lib/adapters.js';
 import { ProcessManager } from './lib/process-manager.js';
 import { JsonStore } from './lib/store.js';
+import { defaultPolicy, evaluateAutoApproval, validatePolicy } from './lib/policy.js';
+import { selectStartable, unmetDependencies, validateDependencies } from './lib/scheduler.js';
 import { inspectWorkspace } from './lib/workspace.js';
 import { clampText, id, now, publicError, readJsonBody } from './lib/utils.js';
 
@@ -22,6 +24,20 @@ const contentTypes = {
 function json(response, status, body) {
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
   response.end(JSON.stringify(body));
+}
+
+// Loopback-only. Reject any other Host (e.g. an attacker's DNS-rebinding domain
+// that resolves to 127.0.0.1) so the local API cannot be reached cross-host.
+function isTrustedHost(host) {
+  const hostname = String(host || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
+}
+
+// Block cross-site requests: browsers attach Origin to cross-origin writes, so a
+// present-but-mismatched Origin is a CSRF attempt.
+function isTrustedOrigin(origin, host) {
+  if (!origin) return true;
+  try { return new URL(origin).host === host; } catch { return false; }
 }
 
 function routeMatch(pathname, expression) {
@@ -51,7 +67,9 @@ export class ConclaveApp {
   constructor({ workspace = projectDir, storeFile = dataFile } = {}) {
     this.clients = new Set();
     this.store = new JsonStore(storeFile, path.resolve(workspace));
-    this.processes = new ProcessManager({ onEvent: (event) => this.onProcessEvent(event) });
+    this.processes = new ProcessManager({ onEvent: (event) => {
+      this.onProcessEvent(event).catch((error) => console.error('process event handling failed', publicError(error)));
+    } });
     this.server = http.createServer((request, response) => this.handle(request, response));
   }
 
@@ -67,6 +85,9 @@ export class ConclaveApp {
     await this.store.update((state) => {
       state.agents = agents;
       state.workspace = workspace;
+      state.policy = { ...defaultPolicy(), ...state.policy,
+        autoRetry: { ...defaultPolicy().autoRetry, ...(state.policy?.autoRetry ?? {}) } };
+      state.tasks.forEach((task) => { task.dependencies ??= []; task.attempts ??= 0; });
       state.executions.filter((entry) => entry.status === 'running').forEach((entry) => {
         entry.status = 'interrupted';
         entry.finishedAt = now();
@@ -77,6 +98,7 @@ export class ConclaveApp {
         task.updatedAt = now();
       });
     });
+    await this.schedulePass();
   }
 
   broadcast(event) {
@@ -113,20 +135,50 @@ export class ConclaveApp {
         if (execution) Object.assign(execution, {
           status: event.status, exitCode: event.exitCode, signal: event.signal, finishedAt: event.finishedAt
         });
+        let autoAccepted = false;
         if (event.taskId) {
           const task = state.tasks.find((entry) => entry.id === event.taskId);
-          if (task) {
-            task.status = event.status === 'completed' ? 'review-required' : event.status;
+          if (task && !['completed', 'rejected', 'cancelled'].includes(task.status)) {
+            // Auto-retry keys on event.status === 'failed' only: SIGTERM/timeout/pause
+            // arrive as 'cancelled' (human or room-level intent) and are never retried.
+            const gate = state.policy.enabled && state.policy.autoRetry.enabled && !state.room.paused;
+            const retry = event.status === 'failed' && gate && (task.attempts ?? 0) < state.policy.autoRetry.maxAttempts;
+            autoAccepted = event.status === 'completed' && state.policy.enabled && state.policy.autoAcceptReviews && !state.room.paused;
             task.updatedAt = event.finishedAt;
             task.executionId = event.executionId;
+            if (retry) {
+              task.attempts = (task.attempts ?? 0) + 1;
+              task.retryCap = state.policy.autoRetry.maxAttempts; // freeze the cap the attempt counted against, for display
+              task.status = 'queued';
+              task.blocker = null;
+              state.audit.push({ id: id('audit'), type: 'task.auto-retried', taskId: task.id, executionId: event.executionId,
+                decidedBy: 'autopilot', detail: `retry ${task.attempts} of ${state.policy.autoRetry.maxAttempts}`, createdAt: now() });
+              state.messages.push({ id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'autopilot',
+                content: clampText(`Autopilot re-queued “${task.title}” after a failed run (retry ${task.attempts} of ${state.policy.autoRetry.maxAttempts}).`), taskId: task.id, createdAt: event.finishedAt });
+            } else {
+              task.status = event.status === 'completed' ? (autoAccepted ? 'completed' : 'review-required') : event.status;
+              if (event.status === 'failed' && gate && (task.attempts ?? 0) >= state.policy.autoRetry.maxAttempts) {
+                task.blocker = `Automatic retries exhausted after ${task.attempts} retries.`;
+              }
+              if (autoAccepted) {
+                state.audit.push({ id: id('audit'), type: 'task.auto-accepted', taskId: task.id, executionId: event.executionId, decidedBy: 'autopilot', createdAt: now() });
+                state.messages.push({ id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'autopilot',
+                  content: clampText(`Autopilot accepted “${task.title}” — the run completed successfully and auto-accept reviews is enabled.`), taskId: task.id, createdAt: event.finishedAt });
+              }
+            }
           }
         }
         if (event.agentId) {
           const agent = state.agents.find((entry) => entry.id === event.agentId);
-          if (agent) Object.assign(agent, {
+          // The room-wide limit permits concurrent runs on one agent; only reset
+          // its bookkeeping (and touch its connection) when this was its last
+          // live run, so a sibling finish cannot mark a busy agent idle.
+          const stillRunning = state.executions.some((entry) => entry.agentId === event.agentId
+            && entry.status === 'running' && entry.id !== event.executionId);
+          if (agent && !stillRunning) Object.assign(agent, {
             activity: 'idle', currentTaskId: null,
             connection: event.status === 'completed' ? 'verified' : event.status === 'cancelled' ? agent.connection : 'error',
-            lastAction: event.status === 'completed' ? 'Run finished; awaiting review' : `Run ${event.status}`
+            lastAction: event.status === 'completed' ? (autoAccepted ? 'Run finished; auto-accepted by autopilot' : 'Run finished; awaiting review') : `Run ${event.status}`
           });
         }
         state.messages.push({
@@ -143,14 +195,13 @@ export class ConclaveApp {
       state.audit.push({ id: id('audit'), type: event.type, executionId: event.executionId, taskId: event.taskId, createdAt: now() });
       if (state.audit.length > 2_000) state.audit.splice(0, state.audit.length - 2_000);
     });
+    if (event.type === 'execution.finished') await this.schedulePass();
   }
 
   async startTask(taskId) {
     const state = this.store.snapshot();
     const task = state.tasks.find((entry) => entry.id === taskId);
     if (!task) throw new Error('Task not found');
-    if (state.room.paused) throw new Error('The room is paused');
-    if (this.processes.running.size >= state.room.limits.maxConcurrentRuns) throw new Error('Concurrent run limit reached');
     const agent = state.agents.find((entry) => entry.id === task.agentId);
     if (!agent || agent.status !== 'installed') throw new Error('Assigned agent is unavailable');
     const invocation = buildAgentInvocation(agent.id, {
@@ -159,11 +210,35 @@ export class ConclaveApp {
       workspace: state.room.workspace,
       accessMode: task.accessMode
     });
-    await this.store.update((next) => {
+    // Check-and-reserve atomically inside a single serialized mutator so two
+    // concurrent starts (or a start racing /api/room/pause) cannot both pass.
+    // Unmet dependencies or a full run queue land the task in 'queued' (null return)
+    // instead of throwing; the scheduler drains the queue as gates clear.
+    let reserved = false;
+    let prior = null; // pre-flip status, for pause-race repair
+    const queued = await this.store.update((next) => {
+      if (next.room.paused) throw new Error('The room is paused');
       const liveTask = next.tasks.find((entry) => entry.id === taskId);
+      if (!liveTask) throw new Error('Task not found');
+      // Re-entrancy guard: overlapping schedulePass calls (or a pass racing a manual
+      // start) may both pick this task; the serialized store queue lets only the
+      // first proceed — the loser sees a non-startable status and throws.
+      if (!['ready', 'waiting', 'queued'].includes(liveTask.status)) throw new Error('Task is not in a startable state');
+      const liveAgent = next.agents.find((entry) => entry.id === task.agentId);
+      if (!liveAgent || liveAgent.status !== 'installed') throw new Error('Assigned agent is unavailable');
+      const byId = new Map(next.tasks.map((entry) => [entry.id, entry]));
+      if (unmetDependencies(byId, liveTask).length || this.processes.load >= next.room.limits.maxConcurrentRuns) {
+        if (liveTask.status !== 'queued') {
+          Object.assign(liveTask, { status: 'queued', updatedAt: now() });
+          next.audit.push({ id: id('audit'), type: 'task.queued', taskId, createdAt: now() });
+        }
+        return true;
+      }
+      prior = liveTask.status;
+      this.processes.reserve();
+      reserved = true;
       liveTask.status = 'active';
       liveTask.updatedAt = now();
-      const liveAgent = next.agents.find((entry) => entry.id === task.agentId);
       liveAgent.activity = 'running';
       liveAgent.currentTaskId = taskId;
       liveAgent.lastAction = task.title;
@@ -171,16 +246,86 @@ export class ConclaveApp {
         id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'delegation',
         content: `Assigned “${task.title}” to ${liveAgent.name} with ${task.accessMode} access.`, taskId, createdAt: now()
       });
+    }).catch((error) => {
+      // The mutator only throws before reserve(), but a failed save() afterwards
+      // would otherwise leak the reservation forever (phantom load until restart).
+      if (reserved) { this.processes.release(); reserved = false; }
+      throw error;
     });
-    const execution = this.processes.start({
-      taskId, agentId: agent.id, invocation, cwd: state.room.workspace, purpose: task.objective
+    if (queued) {
+      this.broadcast({ type: 'state.changed', reason: 'task.queued', taskId });
+      return null;
+    }
+    try {
+      // Guard against a pause that landed while the reservation mutator was saving.
+      if (this.store.state.room.paused) throw new Error('The room is paused');
+      const execution = this.processes.start({
+        taskId, agentId: agent.id, invocation, cwd: state.room.workspace, purpose: task.objective
+      });
+      this.processes.release();
+      reserved = false;
+      await this.store.update((next) => {
+        const liveTask = next.tasks.find((entry) => entry.id === taskId);
+        liveTask.executionId = execution.id;
+      });
+      this.broadcast({ type: 'state.changed', reason: 'task.started', taskId });
+      return execution;
+    } catch (error) {
+      // Pause-race repair: a throw after the flip but before the spawn succeeded
+      // would strand the task 'active' with no execution. Restore the pre-flip
+      // status so a queued task resumes later and an approved one stays 'waiting'.
+      await this.store.update((next) => {
+        const liveTask = next.tasks.find((entry) => entry.id === taskId);
+        if (liveTask?.status === 'active' && !liveTask.executionId) {
+          Object.assign(liveTask, { status: prior, updatedAt: now() });
+          const liveAgent = next.agents.find((entry) => entry.id === task.agentId);
+          if (liveAgent?.currentTaskId === taskId) Object.assign(liveAgent, { activity: 'idle', currentTaskId: null });
+        }
+      });
+      throw error;
+    } finally {
+      if (reserved) this.processes.release();
+    }
+  }
+
+  // Single scheduler entry point, invoked after every transition that can free a
+  // slot or satisfy a gate. Re-entrancy-safe: selection and dep-failure blocking
+  // run inside the serialized store queue, and the queued→active flip plus
+  // reserve() happen inside startTask's own serialized mutator, which re-checks
+  // status and capacity — so a task picked by two overlapping passes starts at
+  // most once and capacity is never over-subscribed. startTask never calls
+  // schedulePass, so there is no recursion.
+  async schedulePass() {
+    const { start, block } = await this.store.update((state) => {
+      const picked = selectStartable(state, this.processes.load);
+      for (const { id: taskId, blocker } of picked.block) {
+        const task = state.tasks.find((entry) => entry.id === taskId);
+        Object.assign(task, { status: 'blocked', blocker, updatedAt: now() });
+        // A blocked task can never be started from its approval; expire any
+        // pending gate so the Approval Center doesn't accumulate unwinnable
+        // requests (a retry mints a fresh approval).
+        state.approvals.filter((entry) => entry.taskId === taskId && entry.status === 'pending')
+          .forEach((entry) => Object.assign(entry, { status: 'expired', decidedAt: now(), decidedBy: 'system', reason: blocker }));
+        state.audit.push({ id: id('audit'), type: 'task.dependency-blocked', taskId, detail: blocker, createdAt: now() });
+        state.messages.push({ id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'blocker',
+          content: clampText(`“${task.title}” is blocked: ${blocker}`), taskId, createdAt: now() });
+      }
+      return picked;
     });
-    await this.store.update((next) => {
-      const liveTask = next.tasks.find((entry) => entry.id === taskId);
-      liveTask.executionId = execution.id;
-    });
-    this.broadcast({ type: 'state.changed', reason: 'task.started', taskId });
-    return execution;
+    for (const taskId of start) {
+      try { await this.startTask(taskId); } // may re-queue itself (returns null) — fine
+      catch (error) {
+        const detail = publicError(error);
+        if (detail === 'The room is paused') break; // pause raced the pass; the repair left it queued for resume
+        if (detail === 'Task is not in a startable state') continue; // a sibling pass won the race — benign
+        await this.store.update((state) => { // hard failure (e.g. agent vanished mid-race)
+          const live = state.tasks.find((entry) => entry.id === taskId);
+          if (live?.status === 'queued') Object.assign(live, { status: 'blocked', blocker: detail, updatedAt: now() });
+          state.audit.push({ id: id('audit'), type: 'task.start-failed', taskId, detail, createdAt: now() });
+        });
+      }
+    }
+    if (start.length || block.length) this.broadcast({ type: 'state.changed', reason: 'scheduler.pass' });
   }
 
   async createTask(input) {
@@ -191,11 +336,12 @@ export class ConclaveApp {
     const agent = this.store.state.agents.find((entry) => entry.id === input.agentId);
     if (!agent) throw new Error('Select a supported agent');
     if (agent.status !== 'installed') throw new Error(`${agent.name} is unavailable`);
+    const dependencies = validateDependencies(this.store.state.tasks, input.dependencies, null);
     const createdAt = now();
     const task = {
       id: id('task'), title, objective, agentId: agent.id, accessMode,
       status: accessMode === 'workspace-write' ? 'waiting' : 'ready',
-      dependencies: [], blocker: null, executionId: null, createdAt, updatedAt: createdAt
+      dependencies, attempts: 0, blocker: null, executionId: null, createdAt, updatedAt: createdAt
     };
     const preview = accessMode === 'workspace-write' ? buildAgentInvocation(agent.id, {
       executable: agent.executable,
@@ -203,42 +349,188 @@ export class ConclaveApp {
       workspace: this.store.state.room.workspace,
       accessMode
     }) : null;
-    await this.store.update((state) => {
+    const autoApproved = await this.store.update((state) => {
       state.tasks.unshift(task);
       state.audit.push({ id: id('audit'), type: 'task.created', taskId: task.id, agentId: agent.id, createdAt });
-      if (accessMode === 'workspace-write') {
-        state.approvals.unshift({
-          id: id('approval'), type: 'agent-write', status: 'pending', taskId: task.id, agentId: agent.id,
-          title: `${agent.name} requests workspace-write access`,
-          detail: objective, impact: `May create or modify files under ${state.room.workspace}. The agent sandbox remains scoped to the workspace.`,
-          command: displayInvocation(preview), cwd: state.room.workspace, createdAt, decidedAt: null
-        });
-      }
+      if (accessMode !== 'workspace-write') return false;
+      const approval = {
+        id: id('approval'), type: 'agent-write', status: 'pending', taskId: task.id, agentId: agent.id,
+        title: `${agent.name} requests workspace-write access`,
+        detail: objective, impact: `May create or modify files under ${state.room.workspace}. The agent sandbox remains scoped to the workspace.`,
+        command: displayInvocation(preview), cwd: state.room.workspace, createdAt, decidedAt: null
+      };
+      state.approvals.unshift(approval);
+      const verdict = evaluateAutoApproval(state, approval, { running: this.processes.load });
+      if (verdict.code === 'rate-capped') state.audit.push({ id: id('audit'), type: 'autopilot.rate-capped', approvalId: approval.id, createdAt: now() });
+      if (!verdict.allow) return false;
+      this.recordAutoApproval(state, approval, { reason: verdict.reason, taskId: task.id, agentId: agent.id,
+        subject: `workspace-write access for ${agent.name} on “${task.title}”` });
+      return approval.id;
     });
     this.broadcast({ type: 'state.changed', reason: 'task.created', taskId: task.id });
-    if (accessMode === 'read-only') await this.startTask(task.id);
+    if (autoApproved) await this.startTaskViaAutopilot(task.id, autoApproved);
+    if (accessMode === 'read-only') {
+      try {
+        await this.startTask(task.id);
+      } catch (error) {
+        // The task is already persisted; instead of stranding it as an
+        // unstartable 'ready' task behind a 400, mark it blocked (with the
+        // reason) so it lands in the Resolved lane and the request still succeeds.
+        const detail = publicError(error);
+        await this.store.update((state) => {
+          const live = state.tasks.find((entry) => entry.id === task.id);
+          if (live && live.status === 'ready') Object.assign(live, { status: 'blocked', blocker: detail, updatedAt: now() });
+          state.audit.push({ id: id('audit'), type: 'task.start-failed', taskId: task.id, detail, createdAt: now() });
+        });
+        this.broadcast({ type: 'state.changed', reason: 'task.start-failed', taskId: task.id });
+      }
+    }
+    await this.schedulePass();
     return task;
+  }
+
+  // Return a stranded task (restart-blocked, failed, cancelled, or an unstarted
+  // ready/waiting task) to execution. Read-only tasks restart directly;
+  // workspace-write tasks get a fresh pending approval.
+  async retryTask(taskId) {
+    const snapshot = this.store.snapshot();
+    const task = snapshot.tasks.find((entry) => entry.id === taskId);
+    if (!task) throw new Error('Task not found');
+    if (!['blocked', 'failed', 'cancelled', 'rejected', 'interrupted', 'ready', 'waiting'].includes(task.status)) {
+      throw new Error('Task cannot be retried from its current status');
+    }
+    const agent = snapshot.agents.find((entry) => entry.id === task.agentId);
+    if (!agent || agent.status !== 'installed') throw new Error('Assigned agent is unavailable');
+
+    if (task.accessMode === 'read-only') {
+      await this.store.update((state) => {
+        const live = state.tasks.find((entry) => entry.id === taskId);
+        if (live) Object.assign(live, { status: 'ready', blocker: null, executionId: null, attempts: 0, updatedAt: now() });
+        state.audit.push({ id: id('audit'), type: 'task.retried', taskId, createdAt: now() });
+      });
+      this.broadcast({ type: 'state.changed', reason: 'task.retried', taskId });
+      try {
+        await this.startTask(taskId);
+      } catch (error) {
+        const detail = publicError(error);
+        await this.store.update((state) => {
+          const live = state.tasks.find((entry) => entry.id === taskId);
+          if (live && live.status === 'ready') Object.assign(live, { status: 'blocked', blocker: detail, updatedAt: now() });
+          state.audit.push({ id: id('audit'), type: 'task.start-failed', taskId, detail, createdAt: now() });
+        });
+        this.broadcast({ type: 'state.changed', reason: 'task.start-failed', taskId });
+      }
+      await this.schedulePass();
+      return this.store.state.tasks.find((entry) => entry.id === taskId);
+    }
+
+    const createdAt = now();
+    const preview = buildAgentInvocation(agent.id, {
+      executable: agent.executable,
+      prompt: promptForTask(task, agent, snapshot.room.workspace),
+      workspace: snapshot.room.workspace,
+      accessMode: 'workspace-write'
+    });
+    const autoApproved = await this.store.update((state) => {
+      const live = state.tasks.find((entry) => entry.id === taskId);
+      if (live) Object.assign(live, { status: 'waiting', blocker: null, executionId: null, attempts: 0, updatedAt: createdAt });
+      // Supersede any still-pending approval for this task so at most one live
+      // approval gates it — a stale one could otherwise be decided against a
+      // task that has already moved on.
+      state.approvals.filter((entry) => entry.taskId === taskId && entry.status === 'pending')
+        .forEach((entry) => Object.assign(entry, { status: 'superseded', decidedAt: createdAt, decidedBy: 'system' }));
+      const approval = {
+        id: id('approval'), type: 'agent-write', status: 'pending', taskId, agentId: agent.id,
+        title: `${agent.name} requests workspace-write access`,
+        detail: task.objective, impact: `May create or modify files under ${state.room.workspace}. The agent sandbox remains scoped to the workspace.`,
+        command: displayInvocation(preview), cwd: state.room.workspace, createdAt, decidedAt: null
+      };
+      state.approvals.unshift(approval);
+      state.audit.push({ id: id('audit'), type: 'task.retried', taskId, createdAt });
+      const verdict = evaluateAutoApproval(state, approval, { running: this.processes.load });
+      if (verdict.code === 'rate-capped') state.audit.push({ id: id('audit'), type: 'autopilot.rate-capped', approvalId: approval.id, createdAt: now() });
+      if (!verdict.allow) return false;
+      this.recordAutoApproval(state, approval, { reason: verdict.reason, taskId, agentId: agent.id,
+        subject: `workspace-write access for ${agent.name} on “${task.title}”` });
+      return approval.id;
+    });
+    this.broadcast({ type: 'state.changed', reason: 'task.retried', taskId });
+    if (autoApproved) await this.startTaskViaAutopilot(taskId, autoApproved);
+    await this.schedulePass();
+    return this.store.state.tasks.find((entry) => entry.id === taskId);
   }
 
   async decideApproval(approvalId, decision) {
     if (!['approved', 'denied'].includes(decision)) throw new Error('Decision must be approved or denied');
+    if (decision === 'approved') {
+      // Refuse before consuming the approval when the run cannot start yet, so a
+      // paused room or an unstartable task leaves the approval pending for retry
+      // instead of stranding the task with an already-decided approval.
+      const snapshot = this.store.snapshot();
+      const target = snapshot.approvals.find((entry) => entry.id === approvalId);
+      if (target && target.status === 'pending' && (target.type === 'agent-write' || target.type === 'command')) {
+        if (snapshot.room.paused) throw new Error('The room is paused');
+        if (target.type === 'agent-write') {
+          // A blocked/active/terminal task can never start from here — consuming
+          // the approval would only feed an approve→revert loop. A retry mints a
+          // fresh approval once the task is startable again.
+          const task = snapshot.tasks.find((entry) => entry.id === target.taskId);
+          if (!task || !['ready', 'waiting', 'queued'].includes(task.status)) throw new Error('Task is not in a startable state');
+        }
+      }
+    }
     let approval;
+    let reserved = false;
     await this.store.update((state) => {
       approval = state.approvals.find((entry) => entry.id === approvalId);
       if (!approval) throw new Error('Approval request not found');
       if (approval.status !== 'pending') throw new Error('Approval request was already decided');
+      if (decision === 'approved' && approval.type === 'command') {
+        // Check-and-reserve atomically inside the serialized mutator (mirroring
+        // startTask): commands have no task record to queue and startCommand
+        // spawns immediately, so approving one at capacity would over-subscribe
+        // the limit. Throwing here leaves the approval pending for retry.
+        // Agent-write approvals queue instead: startTask returns null.
+        if (state.room.paused) throw new Error('The room is paused');
+        if (this.processes.load >= state.room.limits.maxConcurrentRuns) throw new Error('Concurrent run limit reached');
+        this.processes.reserve();
+        reserved = true;
+      }
       approval.status = decision;
       approval.decidedAt = now();
+      approval.decidedBy = 'user';
       state.audit.push({ id: id('audit'), type: `approval.${decision}`, approvalId, createdAt: approval.decidedAt });
       if (approval.taskId && decision === 'denied') {
         const task = state.tasks.find((entry) => entry.id === approval.taskId);
-        if (task) Object.assign(task, { status: 'rejected', updatedAt: approval.decidedAt });
+        // Only reject a task still gated on an approval — a stale deny must not
+        // clobber a task that already started or finished via another approval.
+        if (task && task.status === 'waiting') Object.assign(task, { status: 'rejected', updatedAt: approval.decidedAt });
       }
+    }).catch((error) => {
+      if (reserved) { this.processes.release(); reserved = false; } // failed save after reserve()
+      throw error;
     });
     if (decision === 'approved') {
-      if (approval.type === 'agent-write') await this.startTask(approval.taskId);
-      if (approval.type === 'command') this.startCommand(approval);
+      if (approval.type === 'agent-write') {
+        // Mirror the autopilot rollback: if the start fails after the approval
+        // was committed, return the approval to pending for manual retry.
+        try {
+          await this.startTask(approval.taskId);
+        } catch (error) {
+          await this.revertFailedStart(approval.taskId, approval.id, error, 'approval.start-failed');
+          throw error;
+        }
+      }
+      if (approval.type === 'command') {
+        try {
+          this.startCommand(approval);
+        } finally {
+          this.processes.release();
+          reserved = false;
+        }
+      }
     }
+    await this.schedulePass();
     this.broadcast({ type: 'state.changed', reason: `approval.${decision}`, approvalId });
     return approval;
   }
@@ -248,6 +540,40 @@ export class ConclaveApp {
       ? { command: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-Command', approval.command] }
       : { command: '/bin/sh', args: ['-lc', approval.command] };
     return this.processes.start({ kind: 'command', invocation, cwd: approval.cwd, purpose: approval.detail });
+  }
+
+  recordAutoApproval(state, approval, { reason, taskId, agentId, subject }) {
+    Object.assign(approval, { status: 'auto-approved', decidedAt: now(), decidedBy: 'autopilot', reason });
+    state.audit.push({ id: id('audit'), type: 'approval.auto-approved', approvalId: approval.id, taskId, agentId, decidedBy: 'autopilot', reason, createdAt: approval.decidedAt });
+    state.messages.push({ id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'autopilot',
+      content: clampText(`Autopilot approved ${subject}: ${reason}.`), taskId, createdAt: approval.decidedAt });
+  }
+
+  // Roll back a decided approval and its task after startTask throws, so the
+  // request is recoverable from the Approval Center instead of being consumed.
+  async revertFailedStart(taskId, approvalId, error, type) {
+    const detail = publicError(error);
+    await this.store.update((state) => {
+      const approval = state.approvals.find((entry) => entry.id === approvalId);
+      if (approval && (approval.status === 'auto-approved' || approval.status === 'approved')) {
+        Object.assign(approval, { status: 'pending', decidedAt: null, decidedBy: null, reason: null });
+      }
+      const task = state.tasks.find((entry) => entry.id === taskId);
+      if (task?.status === 'active' && !task.executionId) {
+        Object.assign(task, { status: 'waiting', updatedAt: now() });
+        const agent = state.agents.find((entry) => entry.id === task.agentId);
+        if (agent?.currentTaskId === taskId) Object.assign(agent, { activity: 'idle', currentTaskId: null });
+      }
+      state.audit.push({ id: id('audit'), type, approvalId, taskId, detail, createdAt: now() });
+      state.messages.push({ id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'autopilot',
+        content: clampText(`Could not start the run (${detail}); the request was returned to the Approval Center for manual review.`), taskId, createdAt: now() });
+    });
+    this.broadcast({ type: 'state.changed', reason: type, taskId });
+  }
+
+  async startTaskViaAutopilot(taskId, approvalId) {
+    try { await this.startTask(taskId); }
+    catch (error) { await this.revertFailedStart(taskId, approvalId, error, 'autopilot.start-failed'); }
   }
 
   async handleApi(request, response, url) {
@@ -271,15 +597,30 @@ export class ConclaveApp {
       if (!content) throw new Error('Message is required');
       const message = { id: id('msg'), source: 'user', sourceName: 'You', type: 'message', content, createdAt: now() };
       await this.store.update((state) => state.messages.push(message));
-      const mentioned = this.store.state.agents.filter((agent) => new RegExp(`@${agent.id}\\b`, 'i').test(content));
-      for (const agent of mentioned) {
-        await this.createTask({
-          title: clampText(content.replace(/@\w+\b/g, '').trim(), 100) || `Message for ${agent.name}`,
-          objective: content, agentId: agent.id, accessMode: input.accessMode
-        });
-      }
+      // Announce the persisted message immediately so a later mention failure
+      // cannot swallow the broadcast and leave the message invisible.
       this.broadcast({ type: 'state.changed', reason: 'message.created', messageId: message.id });
-      return json(response, 201, { message, tasksCreated: mentioned.length });
+      const mentioned = this.store.state.agents.filter((agent) => new RegExp(`@${agent.id}\\b`, 'i').test(content));
+      let tasksCreated = 0;
+      for (const agent of mentioned) {
+        try {
+          await this.createTask({
+            title: clampText(content.replace(/@\w+\b/g, '').trim(), 100) || `Message for ${agent.name}`,
+            objective: content, agentId: agent.id, accessMode: input.accessMode
+          });
+          tasksCreated += 1;
+        } catch (error) {
+          // One unavailable/failed mention must not turn the committed message
+          // into a 400 or abort the remaining mentions.
+          const detail = publicError(error);
+          await this.store.update((state) => state.messages.push({
+            id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'system',
+            content: clampText(`Could not create a task for ${agent.name}: ${detail}`), createdAt: now()
+          }));
+          this.broadcast({ type: 'state.changed', reason: 'message.mention-failed', messageId: message.id });
+        }
+      }
+      return json(response, 201, { message, tasksCreated });
     }
     const approvalMatch = routeMatch(url.pathname, /^\/api\/approvals\/([^/]+)$/);
     if (request.method === 'POST' && approvalMatch) {
@@ -290,8 +631,24 @@ export class ConclaveApp {
     if (request.method === 'POST' && cancelMatch) {
       const task = this.store.state.tasks.find((entry) => entry.id === cancelMatch[1]);
       if (!task) throw new Error('Task not found');
-      if (!task.executionId || !this.processes.cancel(task.executionId)) throw new Error('Task is not running');
-      return json(response, 202, { status: 'cancelling' });
+      if (task.executionId && this.processes.cancel(task.executionId)) return json(response, 202, { status: 'cancelling' });
+      if (task.status === 'queued') {
+        // A queued task has no running execution to interrupt (and an auto-retried
+        // one carries a stale executionId); cancel it directly.
+        await this.store.update((state) => {
+          const live = state.tasks.find((entry) => entry.id === task.id);
+          Object.assign(live, { status: 'cancelled', updatedAt: now() });
+          state.audit.push({ id: id('audit'), type: 'task.cancelled', taskId: task.id, createdAt: now() });
+        });
+        await this.schedulePass();
+        this.broadcast({ type: 'state.changed', reason: 'task.cancelled', taskId: task.id });
+        return json(response, 200, { status: 'cancelled' });
+      }
+      throw new Error('Task is not running');
+    }
+    const retryMatch = routeMatch(url.pathname, /^\/api\/tasks\/([^/]+)\/retry$/);
+    if (request.method === 'POST' && retryMatch) {
+      return json(response, 200, await this.retryTask(retryMatch[1]));
     }
     const reviewMatch = routeMatch(url.pathname, /^\/api\/tasks\/([^/]+)\/review$/);
     if (request.method === 'POST' && reviewMatch) {
@@ -299,10 +656,14 @@ export class ConclaveApp {
       await this.store.update((state) => {
         const task = state.tasks.find((entry) => entry.id === reviewMatch[1]);
         if (!task) throw new Error('Task not found');
+        if (task.status !== 'review-required') throw new Error('Task is not awaiting review');
         task.status = input.accepted ? 'completed' : 'rejected';
         task.updatedAt = now();
+        state.audit.push({ id: id('audit'), type: input.accepted ? 'task.review-accepted' : 'task.review-rejected',
+          taskId: task.id, executionId: task.executionId, decidedBy: 'user', createdAt: now() });
       });
       this.broadcast({ type: 'state.changed', reason: 'task.reviewed', taskId: reviewMatch[1] });
+      await this.schedulePass();
       return json(response, 200, { ok: true });
     }
     if (request.method === 'POST' && url.pathname === '/api/commands') {
@@ -315,8 +676,27 @@ export class ConclaveApp {
         detail: purpose, impact: 'Runs exactly as entered inside the active project workspace.',
         command, cwd: this.store.state.room.workspace, createdAt: now(), decidedAt: null
       };
-      await this.store.update((state) => state.approvals.unshift(approval));
-      this.broadcast({ type: 'state.changed', reason: 'approval.created', approvalId: approval.id });
+      let reserved = false;
+      const autoApproved = await this.store.update((state) => {
+        state.approvals.unshift(approval);
+        const verdict = evaluateAutoApproval(state, approval, { running: this.processes.load });
+        if (verdict.code === 'rate-capped') state.audit.push({ id: id('audit'), type: 'autopilot.rate-capped', approvalId: approval.id, createdAt: now() });
+        if (!verdict.allow) return false;
+        // Reserve inside the serialized mutator (mirroring startTask) so the
+        // spawn cannot race another reservation past maxConcurrentRuns.
+        this.processes.reserve();
+        reserved = true;
+        this.recordAutoApproval(state, approval, { reason: verdict.reason, subject: `command “${approval.command}”` });
+        return true;
+      }).catch((error) => {
+        if (reserved) this.processes.release(); // failed save after reserve()
+        throw error;
+      });
+      if (autoApproved) {
+        try { this.startCommand(approval); }
+        finally { this.processes.release(); }
+      }
+      this.broadcast({ type: 'state.changed', reason: autoApproved ? 'approval.auto-approved' : 'approval.created', approvalId: approval.id });
       return json(response, 201, approval);
     }
     if (request.method === 'POST' && url.pathname === '/api/room/pause') {
@@ -328,7 +708,19 @@ export class ConclaveApp {
     if (request.method === 'POST' && url.pathname === '/api/room/resume') {
       await this.store.update((state) => { state.room.paused = false; });
       this.broadcast({ type: 'state.changed', reason: 'room.resumed' });
+      await this.schedulePass();
       return json(response, 200, { paused: false });
+    }
+    if (request.method === 'POST' && url.pathname === '/api/policy') {
+      const policy = validatePolicy(await readJsonBody(request));
+      await this.store.update((state) => {
+        state.policy = policy;
+        state.audit.push({ id: id('audit'), type: 'policy.updated',
+          detail: `enabled=${policy.enabled} writes=${policy.autoApproveWrites} allowlist=${policy.commandAllowlist.length} reviews=${policy.autoAcceptReviews} cap=${policy.maxAutoApprovalsPerHour} retry=${policy.autoRetry.enabled}:${policy.autoRetry.maxAttempts}`, createdAt: now() });
+      });
+      this.broadcast({ type: 'state.changed', reason: 'policy.updated' });
+      await this.schedulePass();
+      return json(response, 200, this.store.state.policy);
     }
     if (request.method === 'POST' && url.pathname === '/api/workspace/refresh') {
       const workspace = await inspectWorkspace(this.store.state.room.workspace);
@@ -353,6 +745,7 @@ export class ConclaveApp {
         state.audit.push({ id: id('audit'), type: 'agents.scanned', createdAt: now() });
       });
       this.broadcast({ type: 'state.changed', reason: 'agents.scanned' });
+      await this.schedulePass();
       return json(response, 200, agents);
     }
     if (request.method === 'POST' && url.pathname === '/api/workspace') {
@@ -392,8 +785,13 @@ export class ConclaveApp {
   async handle(request, response) {
     const url = new URL(request.url, 'http://localhost');
     try {
-      if (url.pathname.startsWith('/api/')) await this.handleApi(request, response, url);
-      else await this.serveStatic(response, url.pathname);
+      if (url.pathname.startsWith('/api/')) {
+        if (!isTrustedHost(request.headers.host)) return json(response, 403, { error: 'Untrusted Host header' });
+        if (request.method !== 'GET' && !isTrustedOrigin(request.headers.origin, request.headers.host)) {
+          return json(response, 403, { error: 'Cross-origin request blocked' });
+        }
+        await this.handleApi(request, response, url);
+      } else await this.serveStatic(response, url.pathname);
     } catch (error) {
       json(response, 400, { error: publicError(error) });
     }

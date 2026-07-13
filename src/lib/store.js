@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { id, now } from './utils.js';
+import { defaultPolicy } from './policy.js';
 
 export function initialState(workspace) {
   const createdAt = now();
@@ -26,6 +27,7 @@ export function initialState(workspace) {
       createdAt
     }],
     approvals: [],
+    policy: defaultPolicy(),
     executions: [],
     workspace: { status: [], diff: '', refreshedAt: createdAt },
     audit: []
@@ -60,12 +62,15 @@ export class JsonStore {
   }
 
   update(mutator) {
-    this.queue = this.queue.then(async () => {
+    const run = this.queue.then(async () => {
       const result = await mutator(this.state);
       await this.save();
       return result;
     });
-    return this.queue;
+    // Keep the queue alive after a throwing mutator, but surface the failure —
+    // persistent save errors (e.g. disk full) must not vanish silently.
+    this.queue = run.catch((error) => console.error('store update failed:', error?.message || error));
+    return run;
   }
 
   snapshot() {

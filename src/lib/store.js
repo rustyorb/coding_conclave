@@ -67,7 +67,9 @@ export class JsonStore {
       await this.save();
       return result;
     });
-    this.queue = run.catch(() => {});
+    // Keep the queue alive after a throwing mutator, but surface the failure —
+    // persistent save errors (e.g. disk full) must not vanish silently.
+    this.queue = run.catch((error) => console.error('store update failed:', error?.message || error));
     return run;
   }
 

@@ -93,8 +93,8 @@
           </label>
           <label class="policy-check"><input type="checkbox" id="policyReviews"><span>Auto-accept successful runs</span></label>
           <label class="policy-check"><input type="checkbox" id="policyRetry"><span>Auto-retry failed runs</span></label>
-          <label>Max automatic retries per task<input type="number" id="policyRetryMax" min="1" max="5"></label>
-          <label>Max auto-approvals per hour<input type="number" id="policyRate" min="1" max="500"></label>
+          <label>Max automatic retries per task<input type="number" id="policyRetryMax" min="1" max="5" required></label>
+          <label>Max auto-approvals per hour<input type="number" id="policyRate" min="1" max="500" required></label>
           <p id="policyBudget" class="fine-print"></p>
           <button class="button wide primary" type="submit">Save policy</button>
         </form>

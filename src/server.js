@@ -30,7 +30,7 @@ function json(response, status, body) {
 // that resolves to 127.0.0.1) so the local API cannot be reached cross-host.
 function isTrustedHost(host) {
   const hostname = String(host || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
-  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1' || hostname === '';
+  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
 }
 
 // Block cross-site requests: browsers attach Origin to cross-origin writes, so a
@@ -148,6 +148,7 @@ export class ConclaveApp {
             task.executionId = event.executionId;
             if (retry) {
               task.attempts = (task.attempts ?? 0) + 1;
+              task.retryCap = state.policy.autoRetry.maxAttempts; // freeze the cap the attempt counted against, for display
               task.status = 'queued';
               task.blocker = null;
               state.audit.push({ id: id('audit'), type: 'task.auto-retried', taskId: task.id, executionId: event.executionId,
@@ -169,7 +170,12 @@ export class ConclaveApp {
         }
         if (event.agentId) {
           const agent = state.agents.find((entry) => entry.id === event.agentId);
-          if (agent) Object.assign(agent, {
+          // The room-wide limit permits concurrent runs on one agent; only reset
+          // its bookkeeping (and touch its connection) when this was its last
+          // live run, so a sibling finish cannot mark a busy agent idle.
+          const stillRunning = state.executions.some((entry) => entry.agentId === event.agentId
+            && entry.status === 'running' && entry.id !== event.executionId);
+          if (agent && !stillRunning) Object.assign(agent, {
             activity: 'idle', currentTaskId: null,
             connection: event.status === 'completed' ? 'verified' : event.status === 'cancelled' ? agent.connection : 'error',
             lastAction: event.status === 'completed' ? (autoAccepted ? 'Run finished; auto-accepted by autopilot' : 'Run finished; awaiting review') : `Run ${event.status}`
@@ -240,6 +246,11 @@ export class ConclaveApp {
         id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'delegation',
         content: `Assigned “${task.title}” to ${liveAgent.name} with ${task.accessMode} access.`, taskId, createdAt: now()
       });
+    }).catch((error) => {
+      // The mutator only throws before reserve(), but a failed save() afterwards
+      // would otherwise leak the reservation forever (phantom load until restart).
+      if (reserved) { this.processes.release(); reserved = false; }
+      throw error;
     });
     if (queued) {
       this.broadcast({ type: 'state.changed', reason: 'task.queued', taskId });
@@ -290,6 +301,11 @@ export class ConclaveApp {
       for (const { id: taskId, blocker } of picked.block) {
         const task = state.tasks.find((entry) => entry.id === taskId);
         Object.assign(task, { status: 'blocked', blocker, updatedAt: now() });
+        // A blocked task can never be started from its approval; expire any
+        // pending gate so the Approval Center doesn't accumulate unwinnable
+        // requests (a retry mints a fresh approval).
+        state.approvals.filter((entry) => entry.taskId === taskId && entry.status === 'pending')
+          .forEach((entry) => Object.assign(entry, { status: 'expired', decidedAt: now(), decidedBy: 'system', reason: blocker }));
         state.audit.push({ id: id('audit'), type: 'task.dependency-blocked', taskId, detail: blocker, createdAt: now() });
         state.messages.push({ id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'blocker',
           content: clampText(`“${task.title}” is blocked: ${blocker}`), taskId, createdAt: now() });
@@ -344,7 +360,7 @@ export class ConclaveApp {
         command: displayInvocation(preview), cwd: state.room.workspace, createdAt, decidedAt: null
       };
       state.approvals.unshift(approval);
-      const verdict = evaluateAutoApproval(state, approval, { running: this.processes.running.size });
+      const verdict = evaluateAutoApproval(state, approval, { running: this.processes.load });
       if (verdict.code === 'rate-capped') state.audit.push({ id: id('audit'), type: 'autopilot.rate-capped', approvalId: approval.id, createdAt: now() });
       if (!verdict.allow) return false;
       this.recordAutoApproval(state, approval, { reason: verdict.reason, taskId: task.id, agentId: agent.id,
@@ -418,6 +434,11 @@ export class ConclaveApp {
     const autoApproved = await this.store.update((state) => {
       const live = state.tasks.find((entry) => entry.id === taskId);
       if (live) Object.assign(live, { status: 'waiting', blocker: null, executionId: null, attempts: 0, updatedAt: createdAt });
+      // Supersede any still-pending approval for this task so at most one live
+      // approval gates it — a stale one could otherwise be decided against a
+      // task that has already moved on.
+      state.approvals.filter((entry) => entry.taskId === taskId && entry.status === 'pending')
+        .forEach((entry) => Object.assign(entry, { status: 'superseded', decidedAt: createdAt, decidedBy: 'system' }));
       const approval = {
         id: id('approval'), type: 'agent-write', status: 'pending', taskId, agentId: agent.id,
         title: `${agent.name} requests workspace-write access`,
@@ -443,31 +464,51 @@ export class ConclaveApp {
     if (!['approved', 'denied'].includes(decision)) throw new Error('Decision must be approved or denied');
     if (decision === 'approved') {
       // Refuse before consuming the approval when the run cannot start yet, so a
-      // paused room or a full run queue leaves the approval pending for retry
+      // paused room or an unstartable task leaves the approval pending for retry
       // instead of stranding the task with an already-decided approval.
       const snapshot = this.store.snapshot();
       const target = snapshot.approvals.find((entry) => entry.id === approvalId);
       if (target && target.status === 'pending' && (target.type === 'agent-write' || target.type === 'command')) {
         if (snapshot.room.paused) throw new Error('The room is paused');
-        // Commands have no task record to queue and startCommand never reserves a
-        // slot, so approving one at capacity would over-subscribe the limit.
-        // Agent-write approvals queue instead: startTask returns null.
-        if (target.type === 'command' && this.processes.load >= snapshot.room.limits.maxConcurrentRuns) throw new Error('Concurrent run limit reached');
+        if (target.type === 'agent-write') {
+          // A blocked/active/terminal task can never start from here — consuming
+          // the approval would only feed an approve→revert loop. A retry mints a
+          // fresh approval once the task is startable again.
+          const task = snapshot.tasks.find((entry) => entry.id === target.taskId);
+          if (!task || !['ready', 'waiting', 'queued'].includes(task.status)) throw new Error('Task is not in a startable state');
+        }
       }
     }
     let approval;
+    let reserved = false;
     await this.store.update((state) => {
       approval = state.approvals.find((entry) => entry.id === approvalId);
       if (!approval) throw new Error('Approval request not found');
       if (approval.status !== 'pending') throw new Error('Approval request was already decided');
+      if (decision === 'approved' && approval.type === 'command') {
+        // Check-and-reserve atomically inside the serialized mutator (mirroring
+        // startTask): commands have no task record to queue and startCommand
+        // spawns immediately, so approving one at capacity would over-subscribe
+        // the limit. Throwing here leaves the approval pending for retry.
+        // Agent-write approvals queue instead: startTask returns null.
+        if (state.room.paused) throw new Error('The room is paused');
+        if (this.processes.load >= state.room.limits.maxConcurrentRuns) throw new Error('Concurrent run limit reached');
+        this.processes.reserve();
+        reserved = true;
+      }
       approval.status = decision;
       approval.decidedAt = now();
       approval.decidedBy = 'user';
       state.audit.push({ id: id('audit'), type: `approval.${decision}`, approvalId, createdAt: approval.decidedAt });
       if (approval.taskId && decision === 'denied') {
         const task = state.tasks.find((entry) => entry.id === approval.taskId);
-        if (task) Object.assign(task, { status: 'rejected', updatedAt: approval.decidedAt });
+        // Only reject a task still gated on an approval — a stale deny must not
+        // clobber a task that already started or finished via another approval.
+        if (task && task.status === 'waiting') Object.assign(task, { status: 'rejected', updatedAt: approval.decidedAt });
       }
+    }).catch((error) => {
+      if (reserved) { this.processes.release(); reserved = false; } // failed save after reserve()
+      throw error;
     });
     if (decision === 'approved') {
       if (approval.type === 'agent-write') {
@@ -480,7 +521,14 @@ export class ConclaveApp {
           throw error;
         }
       }
-      if (approval.type === 'command') this.startCommand(approval);
+      if (approval.type === 'command') {
+        try {
+          this.startCommand(approval);
+        } finally {
+          this.processes.release();
+          reserved = false;
+        }
+      }
     }
     await this.schedulePass();
     this.broadcast({ type: 'state.changed', reason: `approval.${decision}`, approvalId });
@@ -628,15 +676,26 @@ export class ConclaveApp {
         detail: purpose, impact: 'Runs exactly as entered inside the active project workspace.',
         command, cwd: this.store.state.room.workspace, createdAt: now(), decidedAt: null
       };
+      let reserved = false;
       const autoApproved = await this.store.update((state) => {
         state.approvals.unshift(approval);
-        const verdict = evaluateAutoApproval(state, approval, { running: this.processes.running.size });
+        const verdict = evaluateAutoApproval(state, approval, { running: this.processes.load });
         if (verdict.code === 'rate-capped') state.audit.push({ id: id('audit'), type: 'autopilot.rate-capped', approvalId: approval.id, createdAt: now() });
         if (!verdict.allow) return false;
+        // Reserve inside the serialized mutator (mirroring startTask) so the
+        // spawn cannot race another reservation past maxConcurrentRuns.
+        this.processes.reserve();
+        reserved = true;
         this.recordAutoApproval(state, approval, { reason: verdict.reason, subject: `command “${approval.command}”` });
         return true;
+      }).catch((error) => {
+        if (reserved) this.processes.release(); // failed save after reserve()
+        throw error;
       });
-      if (autoApproved) this.startCommand(approval);
+      if (autoApproved) {
+        try { this.startCommand(approval); }
+        finally { this.processes.release(); }
+      }
       this.broadcast({ type: 'state.changed', reason: autoApproved ? 'approval.auto-approved' : 'approval.created', approvalId: approval.id });
       return json(response, 201, approval);
     }

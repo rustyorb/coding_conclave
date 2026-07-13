@@ -5,6 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { ConclaveApp } from '../src/server.js';
+import { ProcessManager } from '../src/lib/process-manager.js';
 import { id, now } from '../src/lib/utils.js';
 
 async function makeApp(context) {
@@ -159,4 +160,157 @@ test('a blocked task can be retried back to execution', async (context) => {
   const task = state.tasks.find((entry) => entry.id === taskId);
   assert.equal(task.blocker, null);
   assert.ok(state.audit.some((entry) => entry.type === 'task.retried' && entry.taskId === taskId));
+});
+
+// Slot-aware stub: started executions occupy processes.running so processes.load
+// reflects them (mirrors the helper in scheduler.test.js).
+function stubRunningProcesses(app) {
+  const started = [];
+  app.processes.start = (options) => {
+    const execution = { id: id('exec'), status: 'running', ...options };
+    app.processes.running.set(execution.id, { kill() {} });
+    started.push(execution);
+    return execution;
+  };
+  return started;
+}
+
+function seedTask(app, overrides = {}) {
+  const task = {
+    id: id('task'), title: 'Seeded', objective: 'x', agentId: 'claude', accessMode: 'read-only', status: 'completed',
+    dependencies: [], attempts: 0, blocker: null, executionId: null, createdAt: now(), updatedAt: now(), ...overrides
+  };
+  return app.store.update((state) => { state.tasks.unshift(task); }).then(() => task);
+}
+
+test('a cancelled run that traps SIGTERM and exits with a code is still reported cancelled', async (context) => {
+  const events = [];
+  const manager = new ProcessManager({ onEvent: (event) => events.push(event) });
+  context.after(() => { for (const child of manager.running.values()) child.kill('SIGKILL'); });
+  const script = 'process.on("SIGTERM", () => process.exit(1)); console.log("ready"); setInterval(() => {}, 1000);';
+  const execution = manager.start({
+    invocation: { command: process.execPath, args: ['-e', script] },
+    cwd: os.tmpdir(), purpose: 'trap SIGTERM'
+  });
+  const until = async (predicate) => {
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      const found = events.find(predicate);
+      if (found) return found;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error('timed out waiting for event');
+  };
+  await until((event) => event.type === 'execution.output' && event.line === 'ready');
+  assert.equal(manager.cancel(execution.id, 'user'), true);
+  const finished = await until((event) => event.type === 'execution.finished');
+  assert.equal(finished.signal, null);
+  assert.equal(finished.exitCode, 1);
+  assert.equal(finished.status, 'cancelled');
+  assert.equal(finished.reason, 'user');
+});
+
+test('two concurrent command approvals cannot over-subscribe maxConcurrentRuns', async (context) => {
+  const { app, base } = await makeApp(context);
+  const started = stubRunningProcesses(app);
+  await app.store.update((state) => { state.room.limits.maxConcurrentRuns = 1; });
+  const first = await post(base, '/api/commands', { command: 'node --version', purpose: 'One' });
+  const second = await post(base, '/api/commands', { command: 'node --version', purpose: 'Two' });
+  const decisions = await Promise.all([
+    post(base, `/api/approvals/${first.body.id}`, { decision: 'approved' }),
+    post(base, `/api/approvals/${second.body.id}`, { decision: 'approved' })
+  ]);
+  assert.equal(started.length, 1);
+  assert.equal(app.processes.running.size, 1);
+  assert.deepEqual(decisions.map((entry) => entry.status).sort(), [200, 400]);
+  assert.match(decisions.find((entry) => entry.status === 400).body.error, /limit/);
+  const state = await getState(base);
+  assert.equal(state.approvals.filter((entry) => entry.status === 'pending').length, 1);
+});
+
+test('dep-blocking a waiting write task expires its pending approval instead of stranding it', async (context) => {
+  const { app, base } = await makeApp(context);
+  await seedAgent(app);
+  const dep = await seedTask(app, { title: 'Doomed dep', status: 'failed' });
+  const created = await post(base, '/api/tasks', {
+    title: 'Write', objective: 'Edit files', agentId: 'claude', accessMode: 'workspace-write', dependencies: [dep.id]
+  });
+  assert.equal(created.status, 201);
+  let state = await getState(base);
+  assert.equal(state.tasks.find((entry) => entry.id === created.body.id).status, 'blocked');
+  const approval = state.approvals.find((entry) => entry.taskId === created.body.id);
+  assert.equal(approval.status, 'expired');
+  // The expired approval can no longer be decided, and the task is untouched.
+  const stale = await post(base, `/api/approvals/${approval.id}`, { decision: 'approved' });
+  assert.equal(stale.status, 400);
+  // Retry supersedes/expires rather than accumulating pending approvals.
+  const retried = await post(base, `/api/tasks/${created.body.id}/retry`, {});
+  assert.equal(retried.status, 200);
+  state = await getState(base);
+  assert.equal(state.approvals.filter((entry) => entry.taskId === created.body.id && entry.status === 'pending').length, 0);
+});
+
+test('retrying a waiting write task supersedes its old approval and a stale deny cannot reject a running task', async (context) => {
+  const { app, base } = await makeApp(context);
+  const started = stubRunningProcesses(app);
+  await seedAgent(app);
+  const created = await post(base, '/api/tasks', { title: 'Write', objective: 'Edit files', agentId: 'claude', accessMode: 'workspace-write' });
+  let state = await getState(base);
+  const original = state.approvals[0];
+  const retried = await post(base, `/api/tasks/${created.body.id}/retry`, {});
+  assert.equal(retried.status, 200);
+  state = await getState(base);
+  const pending = state.approvals.filter((entry) => entry.taskId === created.body.id && entry.status === 'pending');
+  assert.equal(pending.length, 1);
+  assert.equal(state.approvals.find((entry) => entry.id === original.id).status, 'superseded');
+  const approved = await post(base, `/api/approvals/${pending[0].id}`, { decision: 'approved' });
+  assert.equal(approved.status, 200);
+  state = await getState(base);
+  assert.equal(state.tasks.find((entry) => entry.id === created.body.id).status, 'active');
+  assert.equal(started.length, 1);
+  // A stale pending approval (hand-seeded) denied now must not clobber the run.
+  const staleId = id('approval');
+  await app.store.update((live) => {
+    live.approvals.unshift({ id: staleId, type: 'agent-write', status: 'pending', taskId: created.body.id, agentId: 'claude',
+      title: 'stale', detail: 'x', impact: 'x', command: 'claude', cwd: live.room.workspace, createdAt: now(), decidedAt: null });
+  });
+  const denied = await post(base, `/api/approvals/${staleId}`, { decision: 'denied' });
+  assert.equal(denied.status, 200);
+  state = await getState(base);
+  assert.equal(state.tasks.find((entry) => entry.id === created.body.id).status, 'active');
+});
+
+test('a failed store save after reserving a slot does not leak the reservation', async (context) => {
+  const { app } = await makeApp(context);
+  await seedAgent(app);
+  const task = await seedTask(app, { title: 'Ready', status: 'ready' });
+  const originalSave = app.store.save.bind(app.store);
+  let failNext = true;
+  app.store.save = () => {
+    if (failNext) { failNext = false; return Promise.reject(new Error('ENOSPC: no space left on device')); }
+    return originalSave();
+  };
+  await assert.rejects(() => app.startTask(task.id), /ENOSPC/);
+  assert.equal(app.processes.load, 0);
+});
+
+test('finishing one of two concurrent runs on the same agent keeps the agent running', async (context) => {
+  const { app, base } = await makeApp(context);
+  await seedAgent(app, { activity: 'running', currentTaskId: 'task_2' });
+  await app.store.update((state) => {
+    state.executions.unshift({ id: 'exec_1', taskId: 'task_1', agentId: 'claude', kind: 'agent', status: 'running', output: '', startedAt: now(), finishedAt: null });
+    state.executions.unshift({ id: 'exec_2', taskId: 'task_2', agentId: 'claude', kind: 'agent', status: 'running', output: '', startedAt: now(), finishedAt: null });
+  });
+  await app.onProcessEvent({ type: 'execution.finished', executionId: 'exec_1', taskId: 'task_1', agentId: 'claude',
+    exitCode: 1, signal: null, status: 'failed', finishedAt: now() });
+  let state = await getState(base);
+  let agent = state.agents[0];
+  assert.equal(agent.activity, 'running');
+  assert.equal(agent.currentTaskId, 'task_2');
+  assert.equal(agent.connection, 'verified');
+  await app.onProcessEvent({ type: 'execution.finished', executionId: 'exec_2', taskId: 'task_2', agentId: 'claude',
+    exitCode: 0, signal: null, status: 'completed', finishedAt: now() });
+  state = await getState(base);
+  agent = state.agents[0];
+  assert.equal(agent.activity, 'idle');
+  assert.equal(agent.currentTaskId, null);
 });

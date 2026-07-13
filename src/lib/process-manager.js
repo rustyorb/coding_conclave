@@ -7,6 +7,7 @@ export class ProcessManager {
   constructor({ onEvent, timeoutMinutes = 20 } = {}) {
     this.running = new Map();
     this.reserved = 0;
+    this.cancelled = new Map(); // executionId → cancel reason, recorded before the kill lands
     this.onEvent = onEvent || (() => {});
     this.timeoutMinutes = timeoutMinutes;
   }
@@ -62,9 +63,15 @@ export class ProcessManager {
     child.on('close', (exitCode, signal) => {
       clearTimeout(timer);
       this.running.delete(executionId);
+      // A cancelled child does not always die by signal: taskkill on win32 and
+      // CLIs that trap SIGTERM exit with a plain code (signal null), which must
+      // not be classified 'failed' — auto-retry would resurrect the cancelled run.
+      const cancelReason = this.cancelled.get(executionId) ?? null;
+      this.cancelled.delete(executionId);
       this.onEvent({
         type: 'execution.finished', executionId, taskId, agentId,
-        exitCode, signal, status: signal ? 'cancelled' : exitCode === 0 ? 'completed' : 'failed', finishedAt: now()
+        exitCode, signal, reason: cancelReason,
+        status: signal || cancelReason ? 'cancelled' : exitCode === 0 ? 'completed' : 'failed', finishedAt: now()
       });
     });
 
@@ -79,6 +86,7 @@ export class ProcessManager {
   cancel(executionId, reason = 'user') {
     const child = this.running.get(executionId);
     if (!child) return false;
+    this.cancelled.set(executionId, reason);
     if (process.platform === 'win32') {
       spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' });
     } else {

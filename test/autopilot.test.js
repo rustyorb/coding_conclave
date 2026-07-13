@@ -172,6 +172,51 @@ test('agent-write auto-approval follows the verification matrix', async (context
   assert.deepEqual(startedTasks.at(-1), manual.body.id);
 });
 
+test('hourly rate cap also holds for agent-write auto-approvals', async (context) => {
+  const { app, base } = await makeApp(context);
+  const startedTasks = [];
+  app.startTask = async (taskId) => { startedTasks.push(taskId); };
+  await seedAgent(app);
+  await enable(base, { autoApproveWrites: 'all-agents', maxAutoApprovalsPerHour: 1 });
+  const makeTask = () => post(base, '/api/tasks', {
+    title: 'Write things', objective: 'Edit files', agentId: 'claude', accessMode: 'workspace-write'
+  });
+  const first = await makeTask();
+  let state = await getState(base);
+  assert.equal(state.approvals.find((entry) => entry.taskId === first.body.id).status, 'auto-approved');
+  assert.deepEqual(startedTasks, [first.body.id]);
+  const second = await makeTask();
+  state = await getState(base);
+  assert.equal(state.approvals.find((entry) => entry.taskId === second.body.id).status, 'pending');
+  assert.equal(startedTasks.length, 1);
+  assert.ok(state.audit.some((entry) => entry.type === 'autopilot.rate-capped'));
+});
+
+test('start failure after a user approval reverts approval and task for retry', async (context) => {
+  const { app, base } = await makeApp(context);
+  app.startTask = async () => { throw new Error('boom'); };
+  await seedAgent(app);
+  const created = await post(base, '/api/tasks', {
+    title: 'Write things', objective: 'Edit files', agentId: 'claude', accessMode: 'workspace-write'
+  });
+  assert.equal(created.status, 201);
+  let state = await getState(base);
+  const decided = await post(base, `/api/approvals/${state.approvals[0].id}`, { decision: 'approved' });
+  assert.equal(decided.status, 400);
+  state = await getState(base);
+  const approval = state.approvals[0];
+  assert.equal(approval.status, 'pending');
+  assert.equal(approval.decidedBy, null);
+  assert.equal(approval.decidedAt, null);
+  assert.equal(state.tasks.find((entry) => entry.id === created.body.id).status, 'waiting');
+  assert.ok(state.audit.some((entry) => entry.type === 'approval.start-failed' && entry.detail === 'boom'));
+  const startedTasks = [];
+  app.startTask = async (taskId) => { startedTasks.push(taskId); };
+  const retried = await post(base, `/api/approvals/${approval.id}`, { decision: 'approved' });
+  assert.equal(retried.status, 200);
+  assert.deepEqual(startedTasks, [created.body.id]);
+});
+
 test('start failure after auto-approval reverts to pending for manual recovery', async (context) => {
   const { app, base } = await makeApp(context);
   app.startTask = async () => { throw new Error('boom'); };

@@ -109,7 +109,7 @@ function taskLane(title, statuses) {
       .filter((dep) => dep.status !== 'completed');
     const deps = waits.length && ['queued', 'waiting', 'ready'].includes(task.status)
       ? `<div class="task-meta"><span>waiting on: ${waits.map((dep) => esc((dep.title || dep.id).slice(0, 24))).join(', ')}</span></div>` : '';
-    const tries = task.attempts ? `<span>retry ${task.attempts}/${state.policy.autoRetry.maxAttempts}</span>` : '';
+    const tries = task.attempts ? `<span>retry ${task.attempts}${task.retryCap ? `/${task.retryCap}` : ''}</span>` : '';
     return `<article class="task-card"><h3>${esc(task.title)}</h3><p>${esc(task.objective)}</p><div class="task-meta"><span>${esc(agent?.name || task.agentId)}</span><span>${esc(task.status)}</span>${tries}</div>${blocker}${deps}${review}${cancel}${retry}</article>`;
   }).join('') || '<div class="blank-state">No tasks</div>'}</section>`;
 }
@@ -256,14 +256,18 @@ $('#workspaceForm').addEventListener('submit', async (event) => {
 
 $('#policyForm').addEventListener('submit', async (event) => {
   event.preventDefault();
+  // An empty number input submits '' and Number('') === 0, which validatePolicy
+  // rejects — keep the saved value instead of failing the whole policy save.
+  const retryMax = $('#policyRetryMax').value.trim();
+  const rate = $('#policyRate').value.trim();
   try {
     await api('/api/policy', { method: 'POST', body: JSON.stringify({
       enabled: $('#policyEnabled').checked,
       autoApproveWrites: $('#policyWrites').value,
       commandAllowlist: $('#policyAllowlist').value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
       autoAcceptReviews: $('#policyReviews').checked,
-      autoRetry: { enabled: $('#policyRetry').checked, maxAttempts: Number($('#policyRetryMax').value) },
-      maxAutoApprovalsPerHour: Number($('#policyRate').value)
+      autoRetry: { enabled: $('#policyRetry').checked, maxAttempts: retryMax === '' ? state.policy.autoRetry.maxAttempts : Number(retryMax) },
+      maxAutoApprovalsPerHour: rate === '' ? state.policy.maxAutoApprovalsPerHour : Number(rate)
     }) });
     toast('Autopilot policy saved'); await refresh();
   } catch (error) { toast(error.message, true); }
@@ -284,7 +288,8 @@ document.addEventListener('click', async (event) => {
       toast(`Action ${button.dataset.decision}`); await refresh();
     }
     if (button.dataset.cancel) {
-      await api(`/api/tasks/${button.dataset.cancel}/cancel`, { method: 'POST', body: '{}' }); toast('Interrupt requested');
+      const result = await api(`/api/tasks/${button.dataset.cancel}/cancel`, { method: 'POST', body: '{}' });
+      toast(result.status === 'cancelled' ? 'Task removed from queue' : 'Interrupt requested'); await refresh();
     }
     if (button.dataset.review) {
       await api(`/api/tasks/${button.dataset.review}/review`, { method: 'POST', body: JSON.stringify({ accepted: button.dataset.accepted === 'true' }) });

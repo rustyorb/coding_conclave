@@ -15,12 +15,25 @@ function baseState(overrides = {}) {
 test('defaultPolicy is all-off and validatePolicy fills defaults', () => {
   const policy = defaultPolicy();
   assert.deepEqual(policy, {
-    enabled: false, autoApproveWrites: 'off', commandAllowlist: [], autoAcceptReviews: false, maxAutoApprovalsPerHour: 20
+    enabled: false, autoApproveWrites: 'off', commandAllowlist: [], autoAcceptReviews: false, maxAutoApprovalsPerHour: 20,
+    autoRetry: { enabled: false, maxAttempts: 2 }
   });
   assert.deepEqual(validatePolicy({}), policy);
   const validated = validatePolicy({ enabled: true, injected: 'nope', rateWindow: [1] });
-  assert.deepEqual(Object.keys(validated).sort(), ['autoAcceptReviews', 'autoApproveWrites', 'commandAllowlist', 'enabled', 'maxAutoApprovalsPerHour']);
+  assert.deepEqual(Object.keys(validated).sort(), ['autoAcceptReviews', 'autoApproveWrites', 'autoRetry', 'commandAllowlist', 'enabled', 'maxAutoApprovalsPerHour']);
   assert.equal(validated.enabled, true);
+});
+
+test('validatePolicy validates autoRetry and strips unknown nested keys', () => {
+  for (const attempts of [0, 6, 1.5, 'x']) {
+    assert.throws(() => validatePolicy({ autoRetry: { enabled: true, maxAttempts: attempts } }), /maxAttempts/);
+  }
+  for (const shape of ['on', 42, null, [true]]) {
+    assert.throws(() => validatePolicy({ autoRetry: shape }), /autoRetry must be an object/);
+  }
+  assert.deepEqual(validatePolicy({}).autoRetry, { enabled: false, maxAttempts: 2 });
+  assert.deepEqual(validatePolicy({ autoRetry: { enabled: 1, maxAttempts: 5, injected: 'nope' } }).autoRetry, { enabled: true, maxAttempts: 5 });
+  assert.deepEqual(validatePolicy({ autoRetry: { enabled: true } }).autoRetry, { enabled: true, maxAttempts: 2 });
 });
 
 test('validatePolicy rejects malformed input and normalizes the allowlist', () => {

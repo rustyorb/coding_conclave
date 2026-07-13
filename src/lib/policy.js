@@ -4,7 +4,8 @@ export function defaultPolicy() {
     autoApproveWrites: 'off',
     commandAllowlist: [],
     autoAcceptReviews: false,
-    maxAutoApprovalsPerHour: 20
+    maxAutoApprovalsPerHour: 20,
+    autoRetry: { enabled: false, maxAttempts: 2 }
   };
 }
 
@@ -22,6 +23,15 @@ export function validatePolicy(input = {}) {
     const cap = Number(input.maxAutoApprovalsPerHour);
     if (!Number.isInteger(cap) || cap < 1 || cap > 500) throw new Error('maxAutoApprovalsPerHour must be an integer between 1 and 500');
     policy.maxAutoApprovalsPerHour = cap;
+  }
+  if (input.autoRetry !== undefined) {
+    if (typeof input.autoRetry !== 'object' || input.autoRetry === null || Array.isArray(input.autoRetry)) throw new Error('autoRetry must be an object');
+    policy.autoRetry.enabled = Boolean(input.autoRetry.enabled);
+    if (input.autoRetry.maxAttempts !== undefined) {
+      const attempts = Number(input.autoRetry.maxAttempts);
+      if (!Number.isInteger(attempts) || attempts < 1 || attempts > 5) throw new Error('autoRetry.maxAttempts must be an integer between 1 and 5');
+      policy.autoRetry.maxAttempts = attempts;
+    }
   }
   if (input.commandAllowlist !== undefined) {
     if (!Array.isArray(input.commandAllowlist)) throw new Error('commandAllowlist must be an array of patterns');

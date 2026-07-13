@@ -47,7 +47,8 @@ test('defaults keep every command pending with autopilot off', async (context) =
   const { app, base } = await makeApp(context);
   const state = await getState(base);
   assert.deepEqual(state.policy, {
-    enabled: false, autoApproveWrites: 'off', commandAllowlist: [], autoAcceptReviews: false, maxAutoApprovalsPerHour: 20
+    enabled: false, autoApproveWrites: 'off', commandAllowlist: [], autoAcceptReviews: false, maxAutoApprovalsPerHour: 20,
+    autoRetry: { enabled: false, maxAttempts: 2 }
   });
   const { status, body } = await post(base, '/api/commands', { command: 'node --version', purpose: 'Verify Node' });
   assert.equal(status, 201);

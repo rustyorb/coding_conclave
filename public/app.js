@@ -101,20 +101,34 @@ function taskLane(title, statuses) {
   return `<section class="task-lane"><div class="lane-head"><span>${title}</span><span>${tasks.length}</span></div>${tasks.map((task) => {
     const agent = state.agents.find((entry) => entry.id === task.agentId);
     const review = task.status === 'review-required' ? `<div class="task-actions"><button class="tiny-button accept" data-review="${task.id}" data-accepted="true">Accept</button><button class="tiny-button reject" data-review="${task.id}" data-accepted="false">Reject</button></div>` : '';
-    const cancel = task.status === 'active' ? `<div class="task-actions"><button class="tiny-button reject" data-cancel="${task.id}">Interrupt</button></div>` : '';
-    const retry = ['blocked', 'failed', 'cancelled'].includes(task.status) ? `<div class="task-actions"><button class="tiny-button accept" data-retry="${task.id}">Retry</button></div>` : '';
+    const cancel = task.status === 'active' ? `<div class="task-actions"><button class="tiny-button reject" data-cancel="${task.id}">Interrupt</button></div>`
+      : task.status === 'queued' ? `<div class="task-actions"><button class="tiny-button reject" data-cancel="${task.id}">Remove</button></div>` : '';
+    const retry = ['blocked', 'failed', 'cancelled', 'rejected'].includes(task.status) ? `<div class="task-actions"><button class="tiny-button accept" data-retry="${task.id}">Retry</button></div>` : '';
     const blocker = task.blocker ? `<div class="task-meta"><span>${esc(task.blocker)}</span></div>` : '';
-    return `<article class="task-card"><h3>${esc(task.title)}</h3><p>${esc(task.objective)}</p><div class="task-meta"><span>${esc(agent?.name || task.agentId)}</span><span>${esc(task.status)}</span></div>${blocker}${review}${cancel}${retry}</article>`;
+    const waits = (task.dependencies || []).map((depId) => state.tasks.find((entry) => entry.id === depId) || { id: depId })
+      .filter((dep) => dep.status !== 'completed');
+    const deps = waits.length && ['queued', 'waiting', 'ready'].includes(task.status)
+      ? `<div class="task-meta"><span>waiting on: ${waits.map((dep) => esc((dep.title || dep.id).slice(0, 24))).join(', ')}</span></div>` : '';
+    const tries = task.attempts ? `<span>retry ${task.attempts}/${state.policy.autoRetry.maxAttempts}</span>` : '';
+    return `<article class="task-card"><h3>${esc(task.title)}</h3><p>${esc(task.objective)}</p><div class="task-meta"><span>${esc(agent?.name || task.agentId)}</span><span>${esc(task.status)}</span>${tries}</div>${blocker}${deps}${review}${cancel}${retry}</article>`;
   }).join('') || '<div class="blank-state">No tasks</div>'}</section>`;
 }
 
 function renderTasks() {
   $('#taskCount').textContent = state.tasks.length;
   $('#taskBoard').innerHTML = [
-    taskLane('Queued', ['proposed', 'ready', 'waiting']),
+    taskLane('Queued', ['proposed', 'ready', 'waiting', 'queued']),
     taskLane('In motion', ['active', 'review-required']),
     taskLane('Resolved', ['completed', 'failed', 'cancelled', 'rejected', 'blocked'])
   ].join('');
+}
+
+function renderTaskDependencyOptions() {
+  const select = $('#taskDeps');
+  // Preserve the user's in-progress selection across SSE-driven re-renders.
+  const previous = [...select.selectedOptions].map((option) => option.value);
+  select.innerHTML = state.tasks.map((task) => `<option value="${esc(task.id)}">${esc(task.title)} · ${esc(task.status)}</option>`).join('');
+  for (const option of select.options) option.selected = previous.includes(option.value);
 }
 
 function renderApprovals() {
@@ -146,6 +160,8 @@ function renderPolicy() {
   $('#policyWrites').value = state.policy.autoApproveWrites;
   $('#policyAllowlist').value = state.policy.commandAllowlist.join('\n');
   $('#policyReviews').checked = state.policy.autoAcceptReviews;
+  $('#policyRetry').checked = state.policy.autoRetry.enabled;
+  $('#policyRetryMax').value = state.policy.autoRetry.maxAttempts;
   $('#policyRate').value = state.policy.maxAutoApprovalsPerHour;
 }
 
@@ -187,7 +203,7 @@ function render() {
   $('#roomMode').textContent = state.room.mode.replace('-', ' ');
   $('#pauseButton').textContent = state.room.paused ? 'Resume room' : 'Pause room';
   $('#pauseButton').classList.toggle('danger', !state.room.paused);
-  renderAgents(); renderFeed(); renderTasks(); renderApprovals(); renderPolicy(); renderWorkspace(); renderExecutions(); renderHealth();
+  renderAgents(); renderFeed(); renderTasks(); renderTaskDependencyOptions(); renderApprovals(); renderPolicy(); renderWorkspace(); renderExecutions(); renderHealth();
 }
 
 $('#composer').addEventListener('submit', async (event) => {
@@ -210,8 +226,11 @@ $('#taskForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   const formElement = event.currentTarget;
   const form = new FormData(formElement);
+  // Object.fromEntries collapses multi-selects to their last value.
+  const payload = Object.fromEntries(form);
+  payload.dependencies = form.getAll('dependencies');
   try {
-    await api('/api/tasks', { method: 'POST', body: JSON.stringify(Object.fromEntries(form)) });
+    await api('/api/tasks', { method: 'POST', body: JSON.stringify(payload) });
     $('#taskDialog').close(); formElement.reset(); toast('Task created'); await refresh();
   } catch (error) { toast(error.message, true); }
 });
@@ -243,6 +262,7 @@ $('#policyForm').addEventListener('submit', async (event) => {
       autoApproveWrites: $('#policyWrites').value,
       commandAllowlist: $('#policyAllowlist').value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
       autoAcceptReviews: $('#policyReviews').checked,
+      autoRetry: { enabled: $('#policyRetry').checked, maxAttempts: Number($('#policyRetryMax').value) },
       maxAutoApprovalsPerHour: Number($('#policyRate').value)
     }) });
     toast('Autopilot policy saved'); await refresh();

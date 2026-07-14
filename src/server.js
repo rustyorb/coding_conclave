@@ -568,6 +568,46 @@ export class ConclaveApp {
       const retried = await this.createChatTurn(message, agent, { retryOf: turn.id });
       return json(response, 201, retried);
     }
+    if (request.method === 'POST' && url.pathname === '/api/tasks/archive-legacy') {
+      const terminal = ['completed', 'failed', 'cancelled', 'rejected'];
+      const archivedIds = [];
+      await this.store.update((state) => {
+        state.tasks.forEach((task) => {
+          if (task.origin !== 'message' || !terminal.includes(task.status) || task.archivedAt) return;
+          task.archivedAt = now();
+          task.updatedAt = now();
+          archivedIds.push(task.id);
+        });
+        if (archivedIds.length) {
+          state.audit.push({
+            id: id('audit'), type: 'task.legacy-archived',
+            detail: { count: archivedIds.length, taskIds: archivedIds }, createdAt: now()
+          });
+        }
+      });
+      if (archivedIds.length) this.broadcast({ type: 'state.changed', reason: 'task.legacy-archived' });
+      return json(response, 200, { archived: archivedIds.length });
+    }
+    const transitionMatch = routeMatch(url.pathname, /^\/api\/tasks\/([^/]+)\/transitions$/);
+    if (request.method === 'POST' && transitionMatch) {
+      const input = await readJsonBody(request);
+      const task = this.store.state.tasks.find((entry) => entry.id === transitionMatch[1]);
+      if (!task) throw new Error('Task not found');
+      if (task.status !== 'proposed' || input.to !== 'ready') {
+        throw new Error(`Cannot transition '${task.status}' to '${String(input.to)}'; the only supported transition is proposed → ready`);
+      }
+      if (!String(task.objective || '').trim()) throw new Error('Task needs a non-empty objective before it can be marked ready');
+      const agent = this.store.state.agents.find((entry) => entry.id === task.agentId);
+      if (!agent || agent.status !== 'installed') throw new Error('Assigned agent is unavailable');
+      await this.store.update((state) => {
+        const live = state.tasks.find((entry) => entry.id === task.id);
+        Object.assign(live, { status: 'ready', blocker: null, updatedAt: now() });
+        state.audit.push({ id: id('audit'), type: 'task.transitioned', taskId: task.id, detail: 'proposed → ready', createdAt: now() });
+      });
+      this.broadcast({ type: 'state.changed', reason: 'task.transitioned', taskId: task.id });
+      await this.startQueuedTasks();
+      return json(response, 200, { ok: true });
+    }
     const archiveMatch = routeMatch(url.pathname, /^\/api\/tasks\/([^/]+)\/(archive|unarchive)$/);
     if (request.method === 'POST' && archiveMatch) {
       const archiving = archiveMatch[2] === 'archive';

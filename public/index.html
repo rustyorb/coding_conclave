@@ -75,7 +75,7 @@
           <label class="check"><input type="checkbox" id="boardClosed"> Closed</label>
           <label class="check"><input type="checkbox" id="boardArchived"> Archived</label>
         </div>
-        <div class="board-meta"><span id="boardSummary"></span><button class="button primary" id="newTaskButton">+ New task</button></div>
+        <div class="board-meta"><span id="boardSummary"></span><button class="button ghost" id="archiveLegacyButton" hidden>Archive legacy chat</button><button class="button primary" id="newTaskButton">+ New task</button></div>
       </div>
       <div id="taskBoard" class="board-lanes"></div>
     </section>
@@ -132,7 +132,7 @@
   </main>
 
   <!-- Global approvals drawer -->
-  <aside id="approvalsDrawer" class="approvals-drawer" aria-label="Approval center" hidden>
+  <aside id="approvalsDrawer" class="approvals-drawer" aria-label="Approval center" tabindex="-1" hidden>
     <div class="drawer-head"><div><span class="eyebrow">YOU RETAIN CONTROL</span><h2>Approval Center</h2></div><button type="button" class="close-button" id="closeApprovals">×</button></div>
     <div id="approvals" class="approval-list"></div>
   </aside>

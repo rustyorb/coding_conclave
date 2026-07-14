@@ -7,20 +7,20 @@ import { ConclaveApp, promptForTask } from '../src/server.js';
 
 test('HTTP API persists chat and requires a decision before command execution', async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'conclave-api-'));
-  const app = new ConclaveApp({ workspace: directory, storeFile: path.join(directory, '.state', 'state.json') });
+  const app = new ConclaveApp({ sessionToken: 'test-token', workspace: directory, storeFile: path.join(directory, '.state', 'state.json') });
   await app.initialize();
   const address = await app.listen({ port: 0 });
   const base = `http://127.0.0.1:${address.port}`;
   context.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
 
   const messageResponse = await fetch(`${base}/api/messages`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content: 'Human checkpoint' })
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-conclave-token': 'test-token' }, body: JSON.stringify({ content: 'Human checkpoint' })
   });
   assert.equal(messageResponse.status, 201);
   assert.equal((await messageResponse.json()).tasksCreated, 0);
 
   const commandResponse = await fetch(`${base}/api/commands`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-conclave-token': 'test-token' },
     body: JSON.stringify({ command: 'node --version', purpose: 'Verify Node' })
   });
   assert.equal(commandResponse.status, 201);
@@ -29,7 +29,7 @@ test('HTTP API persists chat and requires a decision before command execution', 
   assert.equal(approval.status, 'pending');
 
   const decisionResponse = await fetch(`${base}/api/approvals/${approval.id}`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ decision: 'denied' })
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-conclave-token': 'test-token' }, body: JSON.stringify({ decision: 'denied' })
   });
   assert.equal(decisionResponse.status, 200);
   assert.equal((await decisionResponse.json()).status, 'denied');
@@ -42,7 +42,7 @@ test('HTTP API persists chat and requires a decision before command execution', 
 
 test('FR-CHAT-004/FR-POL-009: recipient messages create chat turns, never tasks, and write access requests are ignored', async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'conclave-recipients-'));
-  const app = new ConclaveApp({ workspace: directory, storeFile: path.join(directory, '.state', 'state.json') });
+  const app = new ConclaveApp({ sessionToken: 'test-token', workspace: directory, storeFile: path.join(directory, '.state', 'state.json') });
   await app.initialize();
   await app.store.update((state) => {
     state.agents = [{
@@ -64,7 +64,7 @@ test('FR-CHAT-004/FR-POL-009: recipient messages create chat turns, never tasks,
   context.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
 
   const response = await fetch(`${base}/api/messages`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-conclave-token': 'test-token' },
     body: JSON.stringify({ content: 'Review the composer flow', agentIds: ['codex'], accessMode: 'workspace-write' })
   });
 
@@ -82,7 +82,7 @@ test('FR-CHAT-004/FR-POL-009: recipient messages create chat turns, never tasks,
 
 test('process output broadcasts a lightweight change signal after persistence', async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'conclave-events-'));
-  const app = new ConclaveApp({ workspace: directory, storeFile: path.join(directory, '.state', 'state.json') });
+  const app = new ConclaveApp({ sessionToken: 'test-token', workspace: directory, storeFile: path.join(directory, '.state', 'state.json') });
   await app.initialize();
   context.after(async () => { await rm(directory, { recursive: true, force: true }); });
   const payloads = [];
@@ -125,7 +125,7 @@ test('agent prompts share teammate status, room activity, and the coordination p
 
 test('chat turns run read-only, resolve on completion, and never touch the task board', async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'conclave-chat-'));
-  const app = new ConclaveApp({ workspace: directory, storeFile: path.join(directory, '.state', 'state.json') });
+  const app = new ConclaveApp({ sessionToken: 'test-token', workspace: directory, storeFile: path.join(directory, '.state', 'state.json') });
   await app.initialize();
   await app.store.update((state) => {
     state.agents = [{
@@ -147,7 +147,7 @@ test('chat turns run read-only, resolve on completion, and never touch the task 
   context.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
 
   const response = await fetch(`${base}/api/messages`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-conclave-token': 'test-token' },
     body: JSON.stringify({ content: 'are you alive? just checking in on the room today.', agentIds: ['codex'] })
   });
   assert.equal(response.status, 201);
@@ -170,7 +170,7 @@ test('chat turns run read-only, resolve on completion, and never touch the task 
 
 test('one run per agent: a second task for a busy agent queues and starts after the first finishes', async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'conclave-agent-lock-'));
-  const app = new ConclaveApp({ workspace: directory, storeFile: path.join(directory, '.state', 'state.json') });
+  const app = new ConclaveApp({ sessionToken: 'test-token', workspace: directory, storeFile: path.join(directory, '.state', 'state.json') });
   await app.initialize();
   context.after(async () => { await rm(directory, { recursive: true, force: true }); });
   await app.store.update((state) => {
@@ -209,7 +209,7 @@ test('one run per agent: a second task for a busy agent queues and starts after 
 
 test('blocked tasks can be requeued through the API and start again', async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'conclave-requeue-'));
-  const app = new ConclaveApp({ workspace: directory, storeFile: path.join(directory, '.state', 'state.json') });
+  const app = new ConclaveApp({ sessionToken: 'test-token', workspace: directory, storeFile: path.join(directory, '.state', 'state.json') });
   await app.initialize();
   await app.store.update((state) => {
     state.agents = [{
@@ -236,7 +236,7 @@ test('blocked tasks can be requeued through the API and start again', async (con
   context.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
 
   const response = await fetch(`${base}/api/tasks/task_blocked/requeue`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}'
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-conclave-token': 'test-token' }, body: '{}'
   });
   assert.equal(response.status, 200);
   const task = app.store.state.tasks.find((entry) => entry.id === 'task_blocked');
@@ -246,14 +246,14 @@ test('blocked tasks can be requeued through the API and start again', async (con
   assert.equal(started[0].taskId, 'task_blocked');
 
   const rejected = await fetch(`${base}/api/tasks/task_blocked/requeue`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}'
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-conclave-token': 'test-token' }, body: '{}'
   });
   assert.equal(rejected.status, 400);
 });
 
 test('workspace-write runs are serialized: second writer queues and starts after the first finishes', async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'conclave-lock-'));
-  const app = new ConclaveApp({ workspace: directory, storeFile: path.join(directory, '.state', 'state.json') });
+  const app = new ConclaveApp({ sessionToken: 'test-token', workspace: directory, storeFile: path.join(directory, '.state', 'state.json') });
   await app.initialize();
   context.after(async () => { await rm(directory, { recursive: true, force: true }); });
   await app.store.update((state) => {

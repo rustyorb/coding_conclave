@@ -1,4 +1,5 @@
 import http from 'node:http';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFile, stat } from 'node:fs/promises';
@@ -38,6 +39,22 @@ function isTrustedHost(host) {
 function isTrustedOrigin(origin, host) {
   if (!origin) return true;
   try { return new URL(origin).host === host; } catch { return false; }
+}
+
+function timingSafeStringEqual(left, right) {
+  const a = crypto.createHash('sha256').update(String(left ?? '')).digest();
+  const b = crypto.createHash('sha256').update(String(right ?? '')).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
+function readCookie(request, name) {
+  const header = String(request.headers.cookie ?? '');
+  for (const pair of header.split(';')) {
+    const index = pair.indexOf('=');
+    if (index === -1) continue;
+    if (pair.slice(0, index).trim() === name) return pair.slice(index + 1).trim();
+  }
+  return null;
 }
 
 function routeMatch(pathname, expression) {
@@ -160,7 +177,11 @@ export function promptForChat(message, agent, state) {
 }
 
 export class ConclaveApp {
-  constructor({ workspace = projectDir, storeFile = dataFile } = {}) {
+  constructor({ workspace = projectDir, storeFile = dataFile, sessionToken } = {}) {
+    // Per-boot session secret for mutating routes (PRD 23.4): agents launched as
+    // child processes never learn it, so a local process cannot decide approvals,
+    // author policy, or assign roles. CONCLAVE_TOKEN pins it across restarts.
+    this.sessionToken = sessionToken || crypto.randomBytes(24).toString('base64url');
     this.clients = new Set();
     this.store = new JsonStore(storeFile, path.resolve(workspace));
     this.processes = new ProcessManager({ onEvent: (event) => this.onProcessEvent(event) });
@@ -1218,16 +1239,35 @@ export class ConclaveApp {
     }
   }
 
+  hasSessionAuthority(request) {
+    const presented = request.headers['x-conclave-token'] ?? readCookie(request, 'conclave_token');
+    return presented !== null && timingSafeStringEqual(presented, this.sessionToken);
+  }
+
   async handle(request, response) {
     const url = new URL(request.url, 'http://localhost');
     try {
       if (url.pathname.startsWith('/api/')) {
         if (!isTrustedHost(request.headers.host)) return json(response, 403, { error: 'Untrusted Host header' });
-        if (request.method !== 'GET' && !isTrustedOrigin(request.headers.origin, request.headers.host)) {
-          return json(response, 403, { error: 'Cross-origin request blocked' });
+        if (request.method !== 'GET') {
+          if (!isTrustedOrigin(request.headers.origin, request.headers.host)) {
+            return json(response, 403, { error: 'Cross-origin request blocked' });
+          }
+          // Mutations require the per-boot session token so a local process (or a
+          // running agent) cannot decide approvals or rewrite policy and roles.
+          if (!this.hasSessionAuthority(request)) {
+            return json(response, 403, { error: 'Session token required — open the URL printed in the server console' });
+          }
         }
         await this.handleApi(request, response, url);
-      } else await this.serveStatic(response, url.pathname);
+      } else {
+        // Visiting the tokened URL from the console binds this browser to the
+        // session: the HttpOnly cookie then authorizes its same-origin mutations.
+        if (url.searchParams.get('token') !== null && timingSafeStringEqual(url.searchParams.get('token'), this.sessionToken)) {
+          response.setHeader('set-cookie', `conclave_token=${this.sessionToken}; HttpOnly; SameSite=Strict; Path=/`);
+        }
+        await this.serveStatic(response, url.pathname);
+      }
     } catch (error) {
       json(response, 400, { error: publicError(error) });
     }
@@ -1247,10 +1287,14 @@ export class ConclaveApp {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const app = new ConclaveApp({
     workspace: process.env.CONCLAVE_WORKSPACE || process.cwd(),
-    ...(process.env.CONCLAVE_STATE ? { storeFile: path.resolve(process.env.CONCLAVE_STATE) } : {})
+    ...(process.env.CONCLAVE_STATE ? { storeFile: path.resolve(process.env.CONCLAVE_STATE) } : {}),
+    ...(process.env.CONCLAVE_TOKEN ? { sessionToken: process.env.CONCLAVE_TOKEN } : {})
   });
   await app.initialize();
   const address = await app.listen({ port: Number(process.env.PORT || 4317), host: process.env.HOST || '127.0.0.1' });
-  console.log(`Conclave is running at http://${address.address}:${address.port}`);
+  console.log(`Conclave is running — open this exact URL to unlock actions in your browser:`);
+  console.log(`  http://${address.address}:${address.port}/?token=${app.sessionToken}`);
+  console.log('(Reading is open on loopback; sending, approving, and settings need this session token.');
+  console.log(' Set CONCLAVE_TOKEN to keep the same token across restarts.)');
   console.log(`Workspace: ${app.store.state.room.workspace}`);
 }

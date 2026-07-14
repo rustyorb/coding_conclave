@@ -7,7 +7,7 @@ import { ConclaveApp } from '../src/server.js';
 
 async function makeApp(prefix, seed) {
   const directory = await mkdtemp(path.join(os.tmpdir(), prefix));
-  const app = new ConclaveApp({ workspace: directory, storeFile: path.join(directory, '.state', 'state.json') });
+  const app = new ConclaveApp({ sessionToken: 'test-token', workspace: directory, storeFile: path.join(directory, '.state', 'state.json') });
   await app.initialize();
   if (seed) await app.store.update(seed);
   app.processes.start = () => { throw new Error('no real processes in this test'); };

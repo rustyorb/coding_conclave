@@ -7,7 +7,7 @@ import { ConclaveApp, promptForChat, promptForTask, SPECIALIST_ROLES } from '../
 
 async function makeApp(prefix, seed) {
   const directory = await mkdtemp(path.join(os.tmpdir(), prefix));
-  const app = new ConclaveApp({ workspace: directory, storeFile: path.join(directory, '.state', 'state.json') });
+  const app = new ConclaveApp({ sessionToken: 'test-token', workspace: directory, storeFile: path.join(directory, '.state', 'state.json') });
   await app.initialize();
   if (seed) await app.store.update(seed);
   const started = [];
@@ -25,7 +25,7 @@ async function makeApp(prefix, seed) {
 }
 
 const post = (base, route, body = {}) => fetch(`${base}${route}`, {
-  method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+  method: 'POST', headers: { 'content-type': 'application/json', 'x-conclave-token': 'test-token' }, body: JSON.stringify(body)
 });
 
 const agentRow = (id, name) => ({

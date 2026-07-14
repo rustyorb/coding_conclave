@@ -5,18 +5,19 @@ import { id, now } from './utils.js';
 export function initialState(workspace) {
   const createdAt = now();
   return {
-    version: 1,
+    version: 2,
     room: {
       id: id('room'),
       name: 'Engineering room',
       workspace,
-      mode: 'operator-directed',
+      mode: 'general-chat',
       paused: false,
       createdAt,
       limits: { maxTurnsPerAgent: 12, maxConcurrentRuns: 3, timeoutMinutes: 20 }
     },
     agents: [],
     tasks: [],
+    chatTurns: [],
     messages: [{
       id: id('msg'),
       source: 'system',
@@ -44,7 +45,19 @@ export class JsonStore {
     await mkdir(path.dirname(this.file), { recursive: true });
     try {
       const persisted = JSON.parse(await readFile(this.file, 'utf8'));
-      this.state = { ...initialState(this.workspace), ...persisted };
+      const defaults = initialState(this.workspace);
+      this.state = {
+        ...defaults,
+        ...persisted,
+        version: defaults.version,
+        room: {
+          ...defaults.room,
+          ...persisted.room,
+          mode: 'general-chat',
+          limits: { ...defaults.room.limits, ...persisted.room?.limits }
+        },
+        chatTurns: Array.isArray(persisted.chatTurns) ? persisted.chatTurns : []
+      };
       this.state.room.workspace = this.workspace;
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
@@ -60,12 +73,13 @@ export class JsonStore {
   }
 
   update(mutator) {
-    this.queue = this.queue.then(async () => {
+    const operation = this.queue.catch(() => {}).then(async () => {
       const result = await mutator(this.state);
       await this.save();
       return result;
     });
-    return this.queue;
+    this.queue = operation.catch(() => {});
+    return operation;
   }
 
   snapshot() {

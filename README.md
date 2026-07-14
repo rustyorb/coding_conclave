@@ -31,12 +31,30 @@ npm test
 - Modular adapter contract with provider-specific headless, structured-output, cancellation, and access flags
 - Read-only agent tasks and approval-gated workspace-write tasks
 - Real-time subprocess output over Server-Sent Events
-- Shared room messages with direct `@codex`, `@claude`, and `@gemini` routing
+- Shared room messages with explicit agent recipient controls
 - Persistent tasks, messages, approvals, executions, and audit events in `.conclave/state.json`
 - Room pause, individual interruption, task review, and configurable concurrency/timeout limits
 - Approval-gated local command console
 - Git working-tree status and diff visibility
 - Common secret-pattern redaction before output reaches logs or the UI
+
+### How task assignment works
+
+Anything an agent does happens through a task; there are two ways to create one:
+
+1. **Chat with recipients.** Selecting one or more agent chips on the composer turns the message
+   into one task per selected agent (the message is the objective; the title is its first
+   sentence). With the default read-only access these run immediately and auto-resolve when the
+   agent's reply lands in the feed. With workspace-write access they wait in the Approval Center
+   first.
+2. **The task form** (`New task` or an agent card's `Assign task`) with an explicit title,
+   objective, agent, and access mode.
+
+Lifecycle: `ready` tasks start as soon as their agent is free — one run per agent at a time, one
+workspace-write run per room at a time, capped by the concurrency limit; anything that cannot
+start yet queues with a room message saying why. Finished workspace-write and form-created runs
+land in `review-required` for Accept/Reject. Tasks interrupted by a server restart (or a failed
+queue start) become `blocked` and show a Requeue button on the board.
 
 ### Current safety boundary
 
@@ -111,7 +129,7 @@ The coordination layer, project access, execution policy, session record, and cr
 5. Describe the objective and operating constraints.
 6. Assign work manually or choose a coordination mode.
 7. Watch agent messages, commands, file changes, reviews, and task state in real time.
-8. Participate in the discussion or address a specific agent with a mention.
+8. Participate in the room discussion or select one or more agents as message recipients.
 9. Approve sensitive operations through a common permission queue.
 10. Review the final changes, validation evidence, unresolved issues, and complete audit trail.
 
@@ -122,9 +140,9 @@ The coordination layer, project access, execution policy, session record, and cr
 The user assigns work directly.
 
 ```text
-@Codex inspect the backend architecture and identify the likely failure point.
-@Claude review Codex's findings and challenge unsupported assumptions.
-@Gemini verify the relevant current documentation.
+To: Codex — inspect the backend architecture and identify the likely failure point.
+To: Claude — review Codex's findings and challenge unsupported assumptions.
+To: Gemini — verify the relevant current documentation.
 ```
 
 ### Coordinator-directed
@@ -338,7 +356,7 @@ The first usable version should prove that multiple real agents can safely colla
 - At least two verified coding-agent integrations
 - A modular adapter contract
 - Shared real-time conversation
-- Direct agent mentions
+- Explicit message recipients
 - User-directed and basic coordinator-directed modes
 - Live agent output streaming
 - Shared project workspace support
@@ -404,7 +422,7 @@ Conclave is not intended to:
 
 ### Phase 2: Operator room
 
-- Build shared chat and direct mentions
+- Build shared chat and explicit recipient routing
 - Display agent identity, status, task, and capabilities
 - Add room pause, agent interrupt, and session persistence
 - Record an append-only audit history

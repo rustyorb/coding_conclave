@@ -2,15 +2,17 @@ import { access } from 'node:fs/promises';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 
 const execFileAsync = promisify(execFile);
+const currentDir = path.dirname(fileURLToPath(import.meta.url));
 
 const WINDOWS_EXTENSIONS = ['.exe', '.cmd', '.bat', '.com', '.ps1', ''];
 
-export async function resolveExecutable(command, env = process.env) {
+export async function resolveExecutable(command, env = process.env, extraDirectories = []) {
   const pathEntries = String(env.PATH || '').split(path.delimiter).filter(Boolean);
   const extensions = process.platform === 'win32' ? WINDOWS_EXTENSIONS : [''];
-  for (const directory of pathEntries) {
+  for (const directory of [...pathEntries, ...extraDirectories]) {
     for (const extension of extensions) {
       const candidate = path.join(directory.replace(/^"|"$/g, ''), `${command}${extension}`);
       try {
@@ -32,7 +34,7 @@ function invocation(executable, args) {
   return { command: executable, args };
 }
 
-const DEFINITIONS = [
+export const AGENT_DEFINITIONS = [
   {
     id: 'codex',
     name: 'Codex',
@@ -62,12 +64,25 @@ const DEFINITIONS = [
     id: 'gemini',
     name: 'Gemini',
     provider: 'Google',
-    command: 'gemini',
-    versionArgs: ['--version'],
+    command: 'node',
+    versionArgs: [path.join(currentDir, 'gemini-adapter.js'), '--version'],
     capabilities: ['repository inspection', 'code generation', 'file editing', 'command execution', 'web research', 'testing'],
     build({ executable, prompt, accessMode }) {
-      const approvalMode = accessMode === 'read-only' ? 'plan' : 'auto_edit';
-      const args = ['--prompt', prompt, '--output-format', 'stream-json', '--approval-mode', approvalMode, '--skip-trust'];
+      const wrapperPath = path.join(currentDir, 'gemini-adapter.js');
+      const args = [wrapperPath, '--prompt', prompt, '--access-mode', accessMode];
+      return { ...invocation(executable, args), format: 'jsonl' };
+    }
+  },
+  {
+    id: 'grok',
+    name: 'Grok',
+    provider: 'xAI',
+    command: 'grok',
+    versionArgs: ['--version'],
+    capabilities: ['repository inspection', 'code generation', 'file editing', 'command execution', 'testing', 'code review', 'web research'],
+    build({ executable, prompt, accessMode }) {
+      const permissionMode = accessMode === 'read-only' ? 'plan' : 'acceptEdits';
+      const args = ['-p', prompt, '--output-format', 'streaming-json', '--permission-mode', permissionMode];
       return { ...invocation(executable, args), format: 'jsonl' };
     }
   }
@@ -84,8 +99,12 @@ async function getVersion(executable, versionArgs) {
 }
 
 export async function detectAgents() {
-  return Promise.all(DEFINITIONS.map(async (definition) => {
-    const executable = await resolveExecutable(definition.command);
+  return Promise.all(AGENT_DEFINITIONS.map(async (definition) => {
+    const executable = await resolveExecutable(
+      definition.command,
+      process.env,
+      definition.extraDirectories ? definition.extraDirectories(process.env) : []
+    );
     return {
       id: definition.id,
       name: definition.name,
@@ -102,13 +121,15 @@ export async function detectAgents() {
   }));
 }
 
-export function buildAgentInvocation(agentId, options, definitions = DEFINITIONS) {
+export function buildAgentInvocation(agentId, options, definitions = AGENT_DEFINITIONS) {
   const definition = definitions.find((candidate) => candidate.id === agentId);
   if (!definition) throw new Error(`Unsupported agent: ${agentId}`);
   if (!options.executable) throw new Error(`${definition.name} is not installed or could not be located`);
   if (!['read-only', 'workspace-write'].includes(options.accessMode)) throw new Error('Invalid access mode');
   return definition.build(options);
 }
+
+let grokTextAccumulator = '';
 
 export function summarizeAgentEvent(agentId, line) {
   try {
@@ -126,6 +147,16 @@ export function summarizeAgentEvent(agentId, line) {
     if (agentId === 'gemini') {
       if (event.type === 'message' && event.role === 'assistant') return event.content || null;
       if (event.type === 'result') return event.result || null;
+    }
+    if (agentId === 'grok') {
+      if (event.type === 'text' && event.data) {
+        grokTextAccumulator += event.data;
+      }
+      if (event.type === 'end') {
+        const result = grokTextAccumulator;
+        grokTextAccumulator = '';
+        return result || null;
+      }
     }
   } catch { /* raw, non-JSON output remains visible in the execution log */ }
   return null;

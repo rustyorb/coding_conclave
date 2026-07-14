@@ -33,17 +33,54 @@ function displayInvocation(invocation) {
   return [invocation.command, ...invocation.args].map(quote).join(' ');
 }
 
-function promptForTask(task, agent, workspace) {
+export function promptForTask(task, agent, state) {
+  const teammates = state.agents
+    .filter((entry) => entry.id !== agent.id && entry.status === 'installed')
+    .map((entry) => {
+      const current = entry.currentTaskId && state.tasks.find((item) => item.id === entry.currentTaskId);
+      return `- ${entry.name}: ${entry.activity}${current ? ` on “${clampText(current.title, 120)}”` : ''}`;
+    });
+  const recent = state.messages.slice(-8)
+    .map((message) => `- ${message.sourceName}: ${clampText(message.content, 240)}`);
   return [
-    `You are ${agent.name}, participating as an independent coding agent in a Conclave room.`,
-    `Workspace: ${workspace}`,
+    `You are ${agent.name}, working alongside other coding agents in a Conclave room.`,
+    `Workspace: ${state.room.workspace}`,
     `Access granted for this run: ${task.accessMode}.`,
     `Task: ${task.title}`,
-    task.objective,
+    ...(task.objective.trim() === task.title.trim() ? [] : [task.objective]),
+    ...(task.source ? ['', 'Source message this task was promoted from:', `- ${task.source.sourceName}: ${clampText(task.source.content, 2_000)}`] : []),
     '',
+    'Teammates in this room:',
+    ...(teammates.length ? teammates : ['- none available']),
+    '',
+    'Recent room activity (newest last):',
+    ...(recent.length ? recent : ['- none']),
+    '',
+    'Coordinate through the workspace: follow AGENTS.md, and update COORDINATION.md to claim files before editing them and to leave a handoff when done. Your final reply is posted to the room where teammates and the operator read it.',
     'Work only on this task and within the workspace. Report concrete conclusions, changes, commands, and validation evidence.',
     'Do not claim an action or result that did not occur. Do not expose secrets or hidden reasoning.',
     'Finish with a concise handoff that another agent or the human operator can verify.'
+  ].join('\n');
+}
+
+export function promptForChat(message, agent, state) {
+  const recent = state.messages.filter((entry) => entry.id !== message.id).slice(-11)
+    .map((entry) => `- ${entry.sourceName}: ${clampText(entry.content, 320)}`);
+  return [
+    `You are ${agent.name}, participating in the general chat of a Conclave room.`,
+    `Workspace: ${state.room.workspace}`,
+    'This is one read-only conversational turn, not a coding task.',
+    'Do not modify files, claim work, create tasks, or report that implementation was completed.',
+    'If the operator is asking for code changes, explain that they should use Assign task or New task.',
+    '',
+    'Recent room conversation (newest last):',
+    ...(recent.length ? recent : ['- none']),
+    '',
+    'Latest operator message:',
+    clampText(message.content, 12_000),
+    '',
+    `Reply directly to that message as ${agent.name}. Keep the response useful and concise.`,
+    'Do not expose secrets or hidden reasoning.'
   ].join('\n');
 }
 
@@ -58,7 +95,7 @@ export class ConclaveApp {
   async initialize() {
     await this.store.load();
     const verifiedAgents = new Set(this.store.state.executions
-      .filter((execution) => execution.kind === 'agent' && execution.status === 'completed')
+      .filter((execution) => ['agent', 'chat'].includes(execution.kind) && execution.status === 'completed')
       .map((execution) => execution.agentId));
     const agents = (await detectAgents()).map((agent) => verifiedAgents.has(agent.id)
       ? { ...agent, connection: 'verified', lastAction: 'Verified by a successful execution' }
@@ -71,10 +108,22 @@ export class ConclaveApp {
         entry.status = 'interrupted';
         entry.finishedAt = now();
       });
-      state.tasks.filter((task) => task.status === 'active').forEach((task) => {
+      state.tasks.forEach((task) => {
+        if (task.status !== 'active' && task.status !== 'ready') return;
+        task.blocker = task.status === 'active'
+          ? 'Conclave restarted while this task was active.'
+          : 'Conclave restarted while this task was queued.';
         task.status = 'blocked';
-        task.blocker = 'Conclave restarted while this task was active.';
         task.updatedAt = now();
+      });
+      state.chatTurns.forEach((turn) => {
+        if (turn.status !== 'active' && turn.status !== 'queued') return;
+        const previousStatus = turn.status;
+        turn.status = 'interrupted';
+        turn.blocker = previousStatus === 'active'
+          ? 'Conclave restarted while this chat turn was active.'
+          : 'Conclave restarted while this chat turn was queued.';
+        turn.updatedAt = now();
       });
     });
   }
@@ -85,24 +134,26 @@ export class ConclaveApp {
   }
 
   async onProcessEvent(event) {
-    this.broadcast(event);
     await this.store.update(async (state) => {
       if (event.type === 'execution.started') {
         state.executions.unshift(event.execution);
       }
       if (event.type === 'execution.output') {
         const execution = state.executions.find((entry) => entry.id === event.executionId);
+        const chatTurn = state.chatTurns.find((entry) => entry.executionId === event.executionId);
         if (execution) execution.output = clampText(`${execution.output}${event.stream === 'stderr' ? '[stderr] ' : ''}${event.line}\n`, 120_000);
         if (event.agentId) {
           const summary = summarizeAgentEvent(event.agentId, event.line);
-          if (summary) {
+          if (summary && !(chatTurn && summary.startsWith('Usage: '))) {
             const agent = state.agents.find((candidate) => candidate.id === event.agentId);
             const content = clampText(summary);
             const previous = state.messages.at(-1);
-            if (previous?.source !== event.agentId || previous?.taskId !== event.taskId || previous?.content !== content) {
+            if (previous?.source !== event.agentId || previous?.taskId !== event.taskId
+              || previous?.chatTurnId !== chatTurn?.id || previous?.content !== content) {
               state.messages.push({
                 id: id('msg'), source: event.agentId, sourceName: agent?.name || event.agentId,
-                type: 'progress', content, taskId: event.taskId, createdAt: event.createdAt
+                type: chatTurn ? 'message' : 'progress', content, taskId: event.taskId,
+                chatTurnId: chatTurn?.id, createdAt: event.createdAt
               });
             }
           }
@@ -110,52 +161,159 @@ export class ConclaveApp {
       }
       if (event.type === 'execution.finished') {
         const execution = state.executions.find((entry) => entry.id === event.executionId);
+        const chatTurn = state.chatTurns.find((entry) => entry.executionId === event.executionId);
         if (execution) Object.assign(execution, {
           status: event.status, exitCode: event.exitCode, signal: event.signal, finishedAt: event.finishedAt
         });
         if (event.taskId) {
           const task = state.tasks.find((entry) => entry.id === event.taskId);
           if (task) {
-            task.status = event.status === 'completed' ? 'review-required' : event.status;
+            const autoResolve = task.origin === 'message' && task.accessMode === 'read-only';
+            task.status = event.status === 'completed' ? (autoResolve ? 'completed' : 'review-required') : event.status;
             task.updatedAt = event.finishedAt;
             task.executionId = event.executionId;
           }
         }
+        if (chatTurn) Object.assign(chatTurn, {
+          status: event.status, blocker: event.status === 'completed' ? null : `Agent run ${event.status}.`,
+          updatedAt: event.finishedAt, executionId: event.executionId
+        });
         if (event.agentId) {
           const agent = state.agents.find((entry) => entry.id === event.agentId);
           if (agent) Object.assign(agent, {
-            activity: 'idle', currentTaskId: null,
+            activity: 'idle', currentTaskId: null, currentChatTurnId: null,
             connection: event.status === 'completed' ? 'verified' : event.status === 'cancelled' ? agent.connection : 'error',
-            lastAction: event.status === 'completed' ? 'Run finished; awaiting review' : `Run ${event.status}`
+            lastAction: chatTurn
+              ? event.status === 'completed' ? 'Replied in general chat' : `Chat reply ${event.status}`
+              : event.status === 'completed' ? 'Run finished; awaiting review' : `Run ${event.status}`
           });
         }
-        state.messages.push({
-          id: id('msg'), source: 'system', sourceName: 'Conclave', type: event.status === 'completed' ? 'review' : 'blocker',
-          content: `Execution ${event.status}${event.exitCode === null ? '' : ` with exit code ${event.exitCode}`}.`,
-          taskId: event.taskId, executionId: event.executionId, createdAt: event.finishedAt
-        });
-        try {
-          state.workspace = await inspectWorkspace(state.room.workspace);
-        } catch (error) {
-          state.audit.push({ id: id('audit'), type: 'workspace.refresh-failed', detail: publicError(error), createdAt: now() });
+        if (chatTurn) {
+          if (event.status !== 'completed') {
+            const agent = state.agents.find((entry) => entry.id === event.agentId);
+            state.messages.push({
+              id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'blocker',
+              content: `${agent?.name || event.agentId} could not reply because the chat run ${event.status}.`,
+              chatTurnId: chatTurn.id, executionId: event.executionId, createdAt: event.finishedAt
+            });
+          }
+        } else {
+          state.messages.push({
+            id: id('msg'), source: 'system', sourceName: 'Conclave', type: event.status === 'completed' ? 'review' : 'blocker',
+            content: `Execution ${event.status}${event.exitCode === null ? '' : ` with exit code ${event.exitCode}`}.`,
+            taskId: event.taskId, executionId: event.executionId, createdAt: event.finishedAt
+          });
+          try {
+            state.workspace = await inspectWorkspace(state.room.workspace);
+          } catch (error) {
+            state.audit.push({ id: id('audit'), type: 'workspace.refresh-failed', detail: publicError(error), createdAt: now() });
+          }
         }
       }
-      state.audit.push({ id: id('audit'), type: event.type, executionId: event.executionId, taskId: event.taskId, createdAt: now() });
+      const chatTurn = state.chatTurns.find((entry) => entry.executionId === event.executionId);
+      state.audit.push({
+        id: id('audit'), type: event.type, executionId: event.executionId,
+        taskId: event.taskId, chatTurnId: chatTurn?.id, createdAt: now()
+      });
       if (state.audit.length > 2_000) state.audit.splice(0, state.audit.length - 2_000);
     });
+    const chatTurn = this.store.state.chatTurns.find((entry) => entry.executionId === event.executionId);
+    this.broadcast({
+      type: 'state.changed', reason: event.type,
+      executionId: event.executionId || event.execution?.id,
+      taskId: event.taskId || event.execution?.taskId,
+      chatTurnId: chatTurn?.id,
+      createdAt: event.createdAt || event.finishedAt || event.execution?.startedAt || now()
+    });
+    if (event.type === 'execution.finished') await this.startQueuedTasks();
+  }
+
+  async startQueuedTasks() {
+    const attempted = new Set();
+    while (true) {
+      const state = this.store.state;
+      if (state.room.paused) return;
+      if (this.processes.running.size >= state.room.limits.maxConcurrentRuns) return;
+      const busyAgents = new Set(state.agents.filter((entry) => entry.activity === 'running').map((entry) => entry.id));
+      const writerActive = state.tasks.some((entry) => entry.status === 'active' && entry.accessMode === 'workspace-write');
+      const candidates = [
+        ...state.tasks.filter((entry) => entry.status === 'ready'
+          && !attempted.has(`task:${entry.id}`)
+          && !busyAgents.has(entry.agentId)
+          && !(entry.accessMode === 'workspace-write' && writerActive))
+          .map((entry) => ({ kind: 'task', entry })),
+        ...state.chatTurns.filter((entry) => entry.status === 'queued'
+          && !attempted.has(`chat:${entry.id}`)
+          && !busyAgents.has(entry.agentId))
+          .map((entry) => ({ kind: 'chat', entry }))
+      ].sort((left, right) => left.entry.createdAt.localeCompare(right.entry.createdAt));
+      const queued = candidates[0];
+      if (!queued) return;
+      attempted.add(`${queued.kind}:${queued.entry.id}`);
+      try {
+        if (queued.kind === 'task') await this.startTask(queued.entry.id);
+        else await this.startChatTurn(queued.entry.id);
+      } catch (error) {
+        await this.store.update((next) => {
+          if (queued.kind === 'task') {
+            const liveTask = next.tasks.find((entry) => entry.id === queued.entry.id);
+            if (liveTask) Object.assign(liveTask, { status: 'blocked', blocker: publicError(error), updatedAt: now() });
+          } else {
+            const liveTurn = next.chatTurns.find((entry) => entry.id === queued.entry.id);
+            if (liveTurn) Object.assign(liveTurn, { status: 'failed', blocker: publicError(error), updatedAt: now() });
+          }
+          next.audit.push({
+            id: id('audit'), type: `${queued.kind}.queue-start-failed`,
+            taskId: queued.kind === 'task' ? queued.entry.id : undefined,
+            chatTurnId: queued.kind === 'chat' ? queued.entry.id : undefined,
+            detail: publicError(error), createdAt: now()
+          });
+        });
+        this.broadcast({
+          type: 'state.changed', reason: `${queued.kind}.blocked`,
+          taskId: queued.kind === 'task' ? queued.entry.id : undefined,
+          chatTurnId: queued.kind === 'chat' ? queued.entry.id : undefined
+        });
+      }
+    }
   }
 
   async startTask(taskId) {
     const state = this.store.snapshot();
     const task = state.tasks.find((entry) => entry.id === taskId);
     if (!task) throw new Error('Task not found');
-    if (state.room.paused) throw new Error('The room is paused');
-    if (this.processes.running.size >= state.room.limits.maxConcurrentRuns) throw new Error('Concurrent run limit reached');
     const agent = state.agents.find((entry) => entry.id === task.agentId);
     if (!agent || agent.status !== 'installed') throw new Error('Assigned agent is unavailable');
+    const activeWriter = task.accessMode === 'workspace-write'
+      ? state.tasks.find((entry) =>
+        entry.id !== task.id && entry.status === 'active' && entry.accessMode === 'workspace-write')
+      : null;
+    const agentBusyOn = state.tasks.find((entry) =>
+      entry.id !== task.id && entry.status === 'active' && entry.agentId === task.agentId);
+    const agentBusyChat = state.chatTurns.find((entry) => entry.status === 'active' && entry.agentId === task.agentId);
+    const waitReason = state.room.paused ? 'the room resumes'
+      : activeWriter ? `“${activeWriter.title}” releases the workspace; one agent writes at a time`
+      : agentBusyOn ? `${agent.name} finishes “${agentBusyOn.title}”; one run per agent at a time`
+      : agentBusyChat || agent.activity === 'running' ? `${agent.name} finishes the current chat reply; one run per agent at a time`
+      : this.processes.running.size >= state.room.limits.maxConcurrentRuns ? 'a concurrent run slot frees up'
+      : null;
+    if (waitReason) {
+      await this.store.update((next) => {
+        const liveTask = next.tasks.find((entry) => entry.id === taskId);
+        liveTask.status = 'ready';
+        liveTask.updatedAt = now();
+        next.messages.push({
+          id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'system',
+          content: `Queued “${task.title}” until ${waitReason}.`,
+          taskId, createdAt: now()
+        });
+      });
+      this.broadcast({ type: 'state.changed', reason: 'task.queued', taskId });
+      return null;
+    }
     const invocation = buildAgentInvocation(agent.id, {
       executable: agent.executable,
-      prompt: promptForTask(task, agent, state.room.workspace),
+      prompt: promptForTask(task, agent, state),
       workspace: state.room.workspace,
       accessMode: task.accessMode
     });
@@ -166,6 +324,7 @@ export class ConclaveApp {
       const liveAgent = next.agents.find((entry) => entry.id === task.agentId);
       liveAgent.activity = 'running';
       liveAgent.currentTaskId = taskId;
+      liveAgent.currentChatTurnId = null;
       liveAgent.lastAction = task.title;
       next.messages.push({
         id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'delegation',
@@ -183,6 +342,61 @@ export class ConclaveApp {
     return execution;
   }
 
+  async startChatTurn(chatTurnId) {
+    const state = this.store.snapshot();
+    const turn = state.chatTurns.find((entry) => entry.id === chatTurnId);
+    if (!turn) throw new Error('Chat turn not found');
+    const agent = state.agents.find((entry) => entry.id === turn.agentId);
+    if (!agent || agent.status !== 'installed') throw new Error('Selected agent is unavailable');
+    const waitReason = state.room.paused || agent.activity === 'running'
+      || this.processes.running.size >= state.room.limits.maxConcurrentRuns;
+    if (waitReason) return null;
+    const message = state.messages.find((entry) => entry.id === turn.messageId);
+    if (!message) throw new Error('Chat message not found');
+    const invocation = buildAgentInvocation(agent.id, {
+      executable: agent.executable,
+      prompt: promptForChat(message, agent, state),
+      workspace: state.room.workspace,
+      accessMode: 'read-only'
+    });
+    await this.store.update((next) => {
+      const liveTurn = next.chatTurns.find((entry) => entry.id === chatTurnId);
+      liveTurn.status = 'active';
+      liveTurn.blocker = null;
+      liveTurn.updatedAt = now();
+      const liveAgent = next.agents.find((entry) => entry.id === turn.agentId);
+      liveAgent.activity = 'running';
+      liveAgent.currentTaskId = null;
+      liveAgent.currentChatTurnId = chatTurnId;
+      liveAgent.lastAction = 'Replying in general chat';
+    });
+    const execution = this.processes.start({
+      taskId: null, agentId: agent.id, kind: 'chat', invocation,
+      cwd: state.room.workspace, purpose: message.content
+    });
+    await this.store.update((next) => {
+      const liveTurn = next.chatTurns.find((entry) => entry.id === chatTurnId);
+      liveTurn.executionId = execution.id;
+    });
+    this.broadcast({ type: 'state.changed', reason: 'chat.started', chatTurnId });
+    return execution;
+  }
+
+  async createChatTurn(message, agent, { retryOf = null } = {}) {
+    const createdAt = now();
+    const turn = {
+      id: id('chat'), messageId: message.id, agentId: agent.id, status: 'queued',
+      blocker: null, executionId: null, retryOf, createdAt, updatedAt: createdAt
+    };
+    await this.store.update((state) => {
+      state.chatTurns.unshift(turn);
+      state.audit.push({ id: id('audit'), type: 'chat.created', chatTurnId: turn.id, agentId: agent.id, createdAt });
+    });
+    this.broadcast({ type: 'state.changed', reason: 'chat.created', chatTurnId: turn.id });
+    await this.startChatTurn(turn.id);
+    return turn;
+  }
+
   async createTask(input) {
     const title = clampText(input.title || 'Untitled task', 160).trim();
     const objective = clampText(input.objective, 12_000).trim();
@@ -191,15 +405,18 @@ export class ConclaveApp {
     const agent = this.store.state.agents.find((entry) => entry.id === input.agentId);
     if (!agent) throw new Error('Select a supported agent');
     if (agent.status !== 'installed') throw new Error(`${agent.name} is unavailable`);
+    const priority = ['critical', 'high', 'medium', 'low', 'none'].includes(input.priority) ? input.priority : 'none';
     const createdAt = now();
     const task = {
-      id: id('task'), title, objective, agentId: agent.id, accessMode,
+      id: id('task'), title, objective, agentId: agent.id, accessMode, priority,
+      origin: ['message', 'promoted'].includes(input.origin) ? input.origin : 'operator',
+      source: input.source || null, archivedAt: null,
       status: accessMode === 'workspace-write' ? 'waiting' : 'ready',
       dependencies: [], blocker: null, executionId: null, createdAt, updatedAt: createdAt
     };
     const preview = accessMode === 'workspace-write' ? buildAgentInvocation(agent.id, {
       executable: agent.executable,
-      prompt: promptForTask(task, agent, this.store.state.room.workspace),
+      prompt: promptForTask(task, agent, this.store.state),
       workspace: this.store.state.room.workspace,
       accessMode
     }) : null;
@@ -269,17 +486,94 @@ export class ConclaveApp {
       const input = await readJsonBody(request);
       const content = clampText(input.content, 12_000).trim();
       if (!content) throw new Error('Message is required');
+      const hasExplicitRecipients = Array.isArray(input.agentIds);
+      const requestedIds = hasExplicitRecipients
+        ? [...new Set(input.agentIds.filter((agentId) => typeof agentId === 'string'))]
+        : this.store.state.agents
+          .filter((agent) => new RegExp(`@${agent.id}\\b`, 'i').test(content))
+          .map((agent) => agent.id);
+      const recipients = requestedIds.map((agentId) => this.store.state.agents.find((agent) => agent.id === agentId));
+      if (recipients.some((agent) => !agent)) throw new Error('Select a supported agent');
+      if (recipients.some((agent) => agent.status !== 'installed')) throw new Error('A selected agent is unavailable');
+      const maxTurns = this.store.state.room.limits.maxTurnsPerAgent;
+      const saturated = recipients.find((agent) => this.store.state.chatTurns.filter((turn) =>
+        turn.agentId === agent.id && ['active', 'queued'].includes(turn.status)).length >= maxTurns);
+      if (saturated) throw new Error(`${saturated.name} already has ${maxTurns} chat replies pending`);
       const message = { id: id('msg'), source: 'user', sourceName: 'You', type: 'message', content, createdAt: now() };
       await this.store.update((state) => state.messages.push(message));
-      const mentioned = this.store.state.agents.filter((agent) => new RegExp(`@${agent.id}\\b`, 'i').test(content));
-      for (const agent of mentioned) {
-        await this.createTask({
-          title: clampText(content.replace(/@\w+\b/g, '').trim(), 100) || `Message for ${agent.name}`,
-          objective: content, agentId: agent.id, accessMode: input.accessMode
-        });
+      for (const agent of recipients) {
+        await this.createChatTurn(message, agent);
       }
       this.broadcast({ type: 'state.changed', reason: 'message.created', messageId: message.id });
-      return json(response, 201, { message, tasksCreated: mentioned.length });
+      return json(response, 201, { message, tasksCreated: 0, chatTurnsCreated: recipients.length });
+    }
+    const promoteMatch = routeMatch(url.pathname, /^\/api\/messages\/([^/]+)\/promote$/);
+    if (request.method === 'POST' && promoteMatch) {
+      const message = this.store.state.messages.find((entry) => entry.id === promoteMatch[1]);
+      if (!message) throw new Error('Message not found');
+      const input = await readJsonBody(request);
+      const task = await this.createTask({
+        ...input,
+        origin: 'promoted',
+        source: {
+          messageId: message.id, sourceName: message.sourceName,
+          content: clampText(message.content, 12_000), createdAt: message.createdAt
+        }
+      });
+      return json(response, 201, task);
+    }
+    const chatCancelMatch = routeMatch(url.pathname, /^\/api\/chat-turns\/([^/]+)\/cancel$/);
+    if (request.method === 'POST' && chatCancelMatch) {
+      const turn = this.store.state.chatTurns.find((entry) => entry.id === chatCancelMatch[1]);
+      if (!turn) throw new Error('Chat turn not found');
+      if (turn.status === 'queued') {
+        await this.store.update((state) => {
+          const live = state.chatTurns.find((entry) => entry.id === turn.id);
+          Object.assign(live, { status: 'cancelled', blocker: 'Cancelled by the operator before it started.', updatedAt: now() });
+          state.audit.push({ id: id('audit'), type: 'chat.cancelled', chatTurnId: turn.id, createdAt: now() });
+        });
+        this.broadcast({ type: 'state.changed', reason: 'chat.cancelled', chatTurnId: turn.id });
+        return json(response, 200, { status: 'cancelled' });
+      }
+      if (turn.status === 'active' && turn.executionId && this.processes.cancel(turn.executionId)) {
+        return json(response, 202, { status: 'cancelling' });
+      }
+      throw new Error('Chat turn is not queued or running');
+    }
+    const chatRetryMatch = routeMatch(url.pathname, /^\/api\/chat-turns\/([^/]+)\/retry$/);
+    if (request.method === 'POST' && chatRetryMatch) {
+      const turn = this.store.state.chatTurns.find((entry) => entry.id === chatRetryMatch[1]);
+      if (!turn) throw new Error('Chat turn not found');
+      if (!['failed', 'interrupted', 'cancelled'].includes(turn.status)) {
+        throw new Error('Only failed, interrupted, or cancelled chat replies can be retried');
+      }
+      const message = this.store.state.messages.find((entry) => entry.id === turn.messageId);
+      if (!message) throw new Error('The original chat message no longer exists');
+      const agent = this.store.state.agents.find((entry) => entry.id === turn.agentId);
+      if (!agent || agent.status !== 'installed') throw new Error('The agent for this reply is unavailable');
+      const retried = await this.createChatTurn(message, agent, { retryOf: turn.id });
+      return json(response, 201, retried);
+    }
+    const archiveMatch = routeMatch(url.pathname, /^\/api\/tasks\/([^/]+)\/(archive|unarchive)$/);
+    if (request.method === 'POST' && archiveMatch) {
+      const archiving = archiveMatch[2] === 'archive';
+      await this.store.update((state) => {
+        const task = state.tasks.find((entry) => entry.id === archiveMatch[1]);
+        if (!task) throw new Error('Task not found');
+        if (archiving && !['completed', 'failed', 'cancelled', 'rejected'].includes(task.status)) {
+          throw new Error('Only completed, failed, cancelled, or rejected tasks can be archived');
+        }
+        task.archivedAt = archiving ? now() : null;
+        task.updatedAt = now();
+        state.audit.push({ id: id('audit'), type: `task.${archiveMatch[2]}d`, taskId: task.id, createdAt: now() });
+      });
+      this.broadcast({ type: 'state.changed', reason: `task.${archiveMatch[2]}d`, taskId: archiveMatch[1] });
+      return json(response, 200, { ok: true });
+    }
+    const executionCancelMatch = routeMatch(url.pathname, /^\/api\/executions\/([^/]+)\/cancel$/);
+    if (request.method === 'POST' && executionCancelMatch) {
+      if (!this.processes.cancel(executionCancelMatch[1])) throw new Error('Execution is not running');
+      return json(response, 202, { status: 'cancelling' });
     }
     const approvalMatch = routeMatch(url.pathname, /^\/api\/approvals\/([^/]+)$/);
     if (request.method === 'POST' && approvalMatch) {
@@ -292,6 +586,19 @@ export class ConclaveApp {
       if (!task) throw new Error('Task not found');
       if (!task.executionId || !this.processes.cancel(task.executionId)) throw new Error('Task is not running');
       return json(response, 202, { status: 'cancelling' });
+    }
+    const requeueMatch = routeMatch(url.pathname, /^\/api\/tasks\/([^/]+)\/requeue$/);
+    if (request.method === 'POST' && requeueMatch) {
+      await this.store.update((state) => {
+        const task = state.tasks.find((entry) => entry.id === requeueMatch[1]);
+        if (!task) throw new Error('Task not found');
+        if (task.status !== 'blocked') throw new Error('Only blocked tasks can be requeued');
+        Object.assign(task, { status: 'ready', blocker: null, updatedAt: now() });
+        state.audit.push({ id: id('audit'), type: 'task.requeued', taskId: task.id, createdAt: now() });
+      });
+      this.broadcast({ type: 'state.changed', reason: 'task.requeued', taskId: requeueMatch[1] });
+      await this.startQueuedTasks();
+      return json(response, 200, { ok: true });
     }
     const reviewMatch = routeMatch(url.pathname, /^\/api\/tasks\/([^/]+)\/review$/);
     if (request.method === 'POST' && reviewMatch) {
@@ -328,6 +635,7 @@ export class ConclaveApp {
     if (request.method === 'POST' && url.pathname === '/api/room/resume') {
       await this.store.update((state) => { state.room.paused = false; });
       this.broadcast({ type: 'state.changed', reason: 'room.resumed' });
+      await this.startQueuedTasks();
       return json(response, 200, { paused: false });
     }
     if (request.method === 'POST' && url.pathname === '/api/workspace/refresh') {
@@ -411,7 +719,10 @@ export class ConclaveApp {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const app = new ConclaveApp({ workspace: process.env.CONCLAVE_WORKSPACE || process.cwd() });
+  const app = new ConclaveApp({
+    workspace: process.env.CONCLAVE_WORKSPACE || process.cwd(),
+    ...(process.env.CONCLAVE_STATE ? { storeFile: path.resolve(process.env.CONCLAVE_STATE) } : {})
+  });
   await app.initialize();
   const address = await app.listen({ port: Number(process.env.PORT || 4317), host: process.env.HOST || '127.0.0.1' });
   console.log(`Conclave is running at http://${address.address}:${address.port}`);

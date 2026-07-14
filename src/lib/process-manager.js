@@ -4,10 +4,21 @@ import { id, now } from './utils.js';
 import { redactSecrets } from './redact.js';
 
 export class ProcessManager {
-  constructor({ onEvent, timeoutMinutes = 20 } = {}) {
+  constructor({ onEvent, onEventError, timeoutMinutes = 20 } = {}) {
     this.running = new Map();
     this.onEvent = onEvent || (() => {});
+    this.onEventError = onEventError || ((error, event) => {
+      console.error(`Process event handler failed for ${event.type}: ${error.message}`);
+    });
     this.timeoutMinutes = timeoutMinutes;
+  }
+
+  emit(event) {
+    try {
+      Promise.resolve(this.onEvent(event)).catch((error) => this.onEventError(error, event));
+    } catch (error) {
+      this.onEventError(error, event);
+    }
   }
 
   start({ taskId = null, agentId = null, kind = 'agent', invocation, cwd, purpose }) {
@@ -34,11 +45,11 @@ export class ProcessManager {
       finishedAt: null
     };
     this.running.set(executionId, child);
-    this.onEvent({ type: 'execution.started', execution });
+    this.emit({ type: 'execution.started', execution });
 
     const emitLine = (stream, line) => {
       const clean = redactSecrets(line);
-      this.onEvent({ type: 'execution.output', executionId, taskId, agentId, stream, line: clean, createdAt: now() });
+      this.emit({ type: 'execution.output', executionId, taskId, agentId, stream, line: clean, createdAt: now() });
     };
     readline.createInterface({ input: child.stdout }).on('line', (line) => emitLine('stdout', line));
     readline.createInterface({ input: child.stderr }).on('line', (line) => emitLine('stderr', line));
@@ -47,7 +58,7 @@ export class ProcessManager {
     child.on('close', (exitCode, signal) => {
       clearTimeout(timer);
       this.running.delete(executionId);
-      this.onEvent({
+      this.emit({
         type: 'execution.finished', executionId, taskId, agentId,
         exitCode, signal, status: signal ? 'cancelled' : exitCode === 0 ? 'completed' : 'failed', finishedAt: now()
       });
@@ -69,7 +80,7 @@ export class ProcessManager {
     } else {
       child.kill('SIGTERM');
     }
-    this.onEvent({ type: 'execution.cancelling', executionId, reason, createdAt: now() });
+    this.emit({ type: 'execution.cancelling', executionId, reason, createdAt: now() });
     return true;
   }
 

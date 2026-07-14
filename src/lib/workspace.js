@@ -25,12 +25,15 @@ export function isInsideWorkspace(workspace, candidate) {
 export async function inspectWorkspace(workspace) {
   const insideWorkTree = await git(['rev-parse', '--is-inside-work-tree'], workspace);
   if (insideWorkTree.trim() !== 'true') {
-    return { status: [], diff: '', refreshedAt: new Date().toISOString() };
+    return { git: false, branch: null, status: [], diff: '', refreshedAt: new Date().toISOString() };
   }
+  const branch = (await git(['rev-parse', '--abbrev-ref', 'HEAD'], workspace)).trim();
   const statusText = await git(['status', '--short', '--untracked-files=all'], workspace);
   const diff = await git(['diff', '--no-ext-diff', '--'], workspace);
   const stagedDiff = await git(['diff', '--cached', '--no-ext-diff', '--'], workspace);
   return {
+    git: true,
+    branch: branch && branch !== 'HEAD' ? branch : branch === 'HEAD' ? 'detached HEAD' : null,
     status: statusText.split(/\r?\n/).filter(Boolean),
     diff: [diff, stagedDiff && `\n# Staged changes\n${stagedDiff}`].filter(Boolean).join('\n'),
     refreshedAt: new Date().toISOString()

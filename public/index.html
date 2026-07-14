@@ -13,53 +13,50 @@
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <header class="topbar">
-    <a class="brand" href="/" aria-label="Conclave home">
+    <a class="brand" href="#/chat" aria-label="Conclave home">
       <span class="brand-mark" aria-hidden="true">
         <svg viewBox="0 0 36 36"><path d="M18 3 31 10.5v15L18 33 5 25.5v-15L18 3Z"/><path d="m12 14 6-3.5 6 3.5v7l-6 3.5-6-3.5v-7Z"/></svg>
       </span>
-      <span><strong>Conclave</strong><small>LOCAL AGENT ROOM</small></span>
+      <span><strong>Conclave</strong><small id="roomName">LOCAL AGENT ROOM</small></span>
     </a>
-    <div class="room-heading">
-      <span class="live-dot"></span>
-      <div><strong id="roomName">Engineering room</strong><small id="roomMode">Operator directed</small></div>
-    </div>
+    <nav class="main-nav" aria-label="Primary">
+      <a href="#/chat" data-route="chat">Chat <span class="nav-badge" id="navChat">0</span></a>
+      <a href="#/board" data-route="board">Board <span class="nav-badge" id="navBoard">0</span></a>
+      <a href="#/runs" data-route="runs">Runs <span class="nav-badge" id="navRuns">0</span></a>
+      <a href="#/workspace" data-route="workspace">Workspace <span class="nav-badge" id="navWorkspace">0</span></a>
+    </nav>
     <div class="top-actions">
-      <button class="icon-button" id="refreshButton" title="Refresh workspace" aria-label="Refresh workspace">
-        <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.34 5.66M20 4v7h-7"/></svg>
+      <button class="button ghost" id="approvalsButton" aria-haspopup="true" aria-expanded="false">
+        Approvals <span class="count-badge" id="approvalBadge">0</span>
       </button>
-      <button class="button ghost" id="consoleButton"><span class="terminal-glyph">›_</span> Console</button>
       <button class="button danger" id="pauseButton">Pause room</button>
     </div>
   </header>
 
-  <main class="shell">
-    <aside class="panel agent-rail">
-      <div class="panel-title"><span>AGENTS</span><button class="text-button" id="scanButton">Rescan</button></div>
-      <div id="agentList" class="agent-list"></div>
-      <div class="rail-footer">
-        <div class="limit-row"><span>Concurrent runs</span><strong id="concurrency">0 / 3</strong></div>
-        <div class="meter"><i id="concurrencyMeter"></i></div>
-        <p>Availability is checked from executables on this machine. No simulated agents.</p>
-      </div>
-    </aside>
-
-    <section class="room-column">
-      <nav class="room-tabs" aria-label="Room views">
-        <button class="tab active" data-view="feed">Room feed <span id="messageCount">0</span></button>
-        <button class="tab" data-view="tasks">Task board <span id="taskCount">0</span></button>
-        <button class="primary-mini" id="newTaskButton">+ New task</button>
-      </nav>
-      <div id="feedView" class="view active">
+  <main class="pages">
+    <!-- ============ CHAT ============ -->
+    <section id="page-chat" class="page" aria-label="Room chat">
+      <aside class="panel agent-rail">
+        <div class="panel-title"><span>PARTICIPANTS</span><button class="text-button" id="scanButton">Rescan</button></div>
+        <div id="agentList" class="agent-list"></div>
+        <div class="rail-footer">
+          <div class="limit-row"><span>Concurrent runs</span><strong id="concurrency">0 / 3</strong></div>
+          <div class="meter"><i id="concurrencyMeter"></i></div>
+          <p>Availability is checked from executables on this machine. Chat is conversation only — work lives on the <a href="#/board">Board</a>.</p>
+        </div>
+      </aside>
+      <div class="chat-column">
         <div id="feed" class="feed"></div>
+        <div id="turnStrip" class="turn-strip" aria-label="Pending agent replies"></div>
         <form id="composer" class="composer">
-          <textarea id="messageInput" rows="2" placeholder="Message the room, or use @codex, @claude, @gemini…" required></textarea>
+          <div class="recipient-row" aria-label="Reply requested from">
+            <span>Reply from</span>
+            <div id="recipientList" class="recipient-list"></div>
+          </div>
+          <textarea id="messageInput" rows="2" placeholder="Message the room…" required></textarea>
           <div class="composer-row">
-            <div class="composer-hints"><span>@ mention routes to a real agent</span><span>Shift + Enter for newline</span></div>
+            <div class="composer-hints"><span id="recipientHint">Visible to the room · no reply requested</span><span>Shift + Enter for newline</span></div>
             <div class="composer-controls">
-              <select id="messageAccess" aria-label="Agent access for mentioned agents">
-                <option value="read-only">Read only</option>
-                <option value="workspace-write">Request write access</option>
-              </select>
               <button class="send-button" type="submit" aria-label="Send message">
                 <svg viewBox="0 0 24 24"><path d="m4 4 17 8-17 8 3-8-3-8Zm3 8h14"/></svg>
               </button>
@@ -67,62 +64,93 @@
           </div>
         </form>
       </div>
-      <div id="tasksView" class="view">
-        <div id="taskBoard" class="task-board"></div>
+    </section>
+
+    <!-- ============ BOARD ============ -->
+    <section id="page-board" class="page" aria-label="Task board">
+      <div class="board-toolbar">
+        <div class="board-filters">
+          <input id="boardSearch" type="search" placeholder="Filter tasks…" aria-label="Filter tasks by text">
+          <select id="boardAgent" aria-label="Filter by agent"><option value="">All agents</option></select>
+          <label class="check"><input type="checkbox" id="boardClosed"> Closed</label>
+          <label class="check"><input type="checkbox" id="boardArchived"> Archived</label>
+        </div>
+        <div class="board-meta"><span id="boardSummary"></span><button class="button primary" id="newTaskButton">+ New task</button></div>
+      </div>
+      <div id="taskBoard" class="board-lanes"></div>
+    </section>
+
+    <!-- ============ RUNS ============ -->
+    <section id="page-runs" class="page" aria-label="Execution runs">
+      <aside class="panel run-rail">
+        <div class="panel-title"><span>EXECUTIONS</span><span class="nav-badge" id="runCount">0</span></div>
+        <div id="runList" class="run-list"></div>
+      </aside>
+      <div class="run-detail">
+        <div id="runMeta" class="run-meta"></div>
+        <pre id="consoleOutput" class="console-output">No executions yet.</pre>
+        <form id="commandForm" class="command-form">
+          <input name="command" placeholder="npm test" aria-label="Command" required>
+          <input name="purpose" placeholder="Purpose: run the test suite" aria-label="Command purpose" required>
+          <button class="button primary" type="submit">Request run</button>
+        </form>
+        <p class="fine-print">Commands never run from this field until explicitly approved in the Approval Center.</p>
       </div>
     </section>
 
-    <aside class="inspector-column">
-      <section class="panel approval-panel">
-        <div class="panel-title"><span>APPROVAL CENTER</span><span id="approvalCount" class="count-badge">0</span></div>
-        <div id="approvals" class="approval-list"></div>
-      </section>
-      <section class="panel workspace-panel">
-        <div class="panel-title"><span>WORKSPACE</span><button class="text-button" id="changeWorkspace">Change</button></div>
-        <button class="workspace-path" id="workspacePath" title="Change workspace"></button>
+    <!-- ============ WORKSPACE ============ -->
+    <section id="page-workspace" class="page" aria-label="Workspace">
+      <div class="workspace-page">
+        <div class="workspace-head">
+          <div>
+            <span class="eyebrow">ACTIVE SCOPE</span>
+            <button class="workspace-path" id="workspacePath" title="Change workspace"></button>
+          </div>
+          <div class="workspace-actions">
+            <button class="button ghost" id="refreshButton">Refresh</button>
+            <button class="button ghost" id="changeWorkspace">Change workspace</button>
+          </div>
+        </div>
         <div class="workspace-summary">
+          <div><strong id="wsGit">—</strong><span>repository</span></div>
+          <div><strong id="wsBranch">—</strong><span>branch</span></div>
           <div><strong id="fileCount">0</strong><span>changed files</span></div>
           <div><strong id="lineCount">0</strong><span>diff lines</span></div>
         </div>
-        <div id="fileList" class="file-list"></div>
-        <button class="button wide ghost" id="diffButton">Inspect current diff</button>
-      </section>
-      <section class="panel evidence-panel">
-        <div class="panel-title"><span>ROOM HEALTH</span></div>
-        <div id="roomHealth"></div>
-      </section>
-    </aside>
+        <div class="workspace-grid">
+          <section class="panel">
+            <div class="panel-title"><span>CHANGED FILES</span></div>
+            <div id="fileList" class="file-list tall"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-title"><span>CURRENT DIFF</span></div>
+            <pre id="diffOutput" class="console-output diff-output">No tracked diff.</pre>
+          </section>
+        </div>
+      </div>
+    </section>
   </main>
+
+  <!-- Global approvals drawer -->
+  <aside id="approvalsDrawer" class="approvals-drawer" aria-label="Approval center" hidden>
+    <div class="drawer-head"><div><span class="eyebrow">YOU RETAIN CONTROL</span><h2>Approval Center</h2></div><button type="button" class="close-button" id="closeApprovals">×</button></div>
+    <div id="approvals" class="approval-list"></div>
+  </aside>
 
   <dialog id="taskDialog" class="dialog">
     <form id="taskForm" method="dialog">
-      <div class="dialog-head"><div><span class="eyebrow">DELEGATE WORK</span><h2>Create a task</h2></div><button type="button" class="close-button" data-close="taskDialog">×</button></div>
+      <div class="dialog-head"><div><span class="eyebrow" id="taskDialogEyebrow">DELEGATE WORK</span><h2 id="taskDialogTitle">Create a task</h2></div><button type="button" class="close-button" data-close="taskDialog">×</button></div>
+      <div id="promoteSource" class="notice" hidden><strong>Promoted from chat</strong><span id="promoteSourceText"></span></div>
       <label>Task title<input name="title" maxlength="160" placeholder="Inspect the authentication flow" required></label>
       <label>Objective<textarea name="objective" rows="6" placeholder="Describe the deliverable, evidence, and completion criteria…" required></textarea></label>
       <div class="form-grid">
         <label>Assigned agent<select name="agentId" id="taskAgent" required></select></label>
-        <label>Workspace access<select name="accessMode"><option value="read-only">Read only · starts now</option><option value="workspace-write">Workspace write · requires approval</option></select></label>
+        <label>Priority<select name="priority"><option value="none">None</option><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option><option value="critical">Critical</option></select></label>
       </div>
-      <div class="notice"><strong>Explicit handoff</strong><span>Conclave sends only this task, the workspace path, and its granted access mode.</span></div>
-      <div class="dialog-actions"><button type="button" class="button ghost" data-close="taskDialog">Cancel</button><button class="button primary" type="submit">Create task</button></div>
+      <label>Workspace access<select name="accessMode"><option value="read-only">Read only · starts now</option><option value="workspace-write">Workspace write · requires approval</option></select></label>
+      <div class="notice"><strong>Explicit handoff</strong><span>Conclave sends only this task, its source context, the workspace path, and the granted access mode.</span></div>
+      <div class="dialog-actions"><button type="button" class="button ghost" data-close="taskDialog">Cancel</button><button class="button primary" type="submit" id="taskSubmit">Create task</button></div>
     </form>
-  </dialog>
-
-  <dialog id="consoleDialog" class="dialog console-dialog">
-    <div class="dialog-head"><div><span class="eyebrow">ATTRIBUTABLE OUTPUT</span><h2>Execution console</h2></div><button type="button" class="close-button" data-close="consoleDialog">×</button></div>
-    <div id="executionTabs" class="execution-tabs"></div>
-    <pre id="consoleOutput" class="console-output">No executions yet.</pre>
-    <form id="commandForm" class="command-form">
-      <input name="command" placeholder="npm test" aria-label="Command" required>
-      <input name="purpose" placeholder="Purpose: run the test suite" aria-label="Command purpose" required>
-      <button class="button primary" type="submit">Request run</button>
-    </form>
-    <p class="fine-print">Commands never run from this field until explicitly approved in the Approval Center.</p>
-  </dialog>
-
-  <dialog id="diffDialog" class="dialog console-dialog">
-    <div class="dialog-head"><div><span class="eyebrow">GIT WORKSPACE</span><h2>Current diff</h2></div><button type="button" class="close-button" data-close="diffDialog">×</button></div>
-    <pre id="diffOutput" class="console-output diff-output">No tracked diff.</pre>
   </dialog>
 
   <dialog id="workspaceDialog" class="dialog">

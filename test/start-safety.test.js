@@ -46,7 +46,7 @@ test('C1: marking a proposed workspace-write task ready routes through a pending
     state.agents = [agentRow('codex', 'Codex')];
     state.tasks.unshift(taskRow('task_write_prop', { status: 'proposed', accessMode: 'workspace-write' }));
   });
-  context.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
+  context.after(async () => { app.processes.running.clear(); await app.close(); await app.store.update(() => {}); await rm(directory, { recursive: true, force: true }); });
 
   const response = await post(base, '/api/tasks/task_write_prop/transitions', { to: 'ready' });
   assert.equal(response.status, 200);
@@ -65,7 +65,7 @@ test('M1: a manual approval whose start fails is returned to pending instead of 
   const { app, started, directory, base } = await makeApp('conclave-m1-', (state) => {
     state.agents = [agentRow('codex', 'Codex')];
   });
-  context.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
+  context.after(async () => { app.processes.running.clear(); await app.close(); await app.store.update(() => {}); await rm(directory, { recursive: true, force: true }); });
 
   await post(base, '/api/tasks', {
     title: 'Write something', objective: 'obj', agentId: 'codex', accessMode: 'workspace-write'
@@ -91,7 +91,7 @@ test('M2: concurrent start attempts on one ready task launch exactly one run', a
     state.agents = [agentRow('codex', 'Codex')];
     state.tasks.unshift(taskRow('task_race'));
   });
-  context.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
+  context.after(async () => { app.processes.running.clear(); await app.close(); await app.store.update(() => {}); await rm(directory, { recursive: true, force: true }); });
 
   const results = await Promise.all([
     app.startTask('task_race'),
@@ -111,7 +111,7 @@ test('M2: concurrent drains cannot start two tasks for one agent', async (contex
       taskRow('task_b', { createdAt: '2026-01-01T00:00:01.000Z' })
     );
   });
-  context.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
+  context.after(async () => { app.processes.running.clear(); await app.close(); await app.store.update(() => {}); await rm(directory, { recursive: true, force: true }); });
 
   await Promise.all([app.startQueuedTasks(), app.startQueuedTasks()]);
   assert.equal(started.length, 1, 'one run per agent survives concurrent drains');

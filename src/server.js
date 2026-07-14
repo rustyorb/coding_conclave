@@ -607,19 +607,23 @@ export class ConclaveApp {
   applyCoordinatorPlan(state, chatTurn) {
     if (!state.room.coordinatorId || chatTurn.agentId !== state.room.coordinatorId) return;
     const message = state.messages.find((entry) =>
-      entry.chatTurnId === chatTurn.id && entry.source === chatTurn.agentId && PLAN_BLOCK.test(entry.content));
+      entry.chatTurnId === chatTurn.id && entry.source === chatTurn.agentId && entry.content.includes('```conclave-plan'));
     if (!message) return;
     const coordinator = state.agents.find((entry) => entry.id === chatTurn.agentId);
     const reject = (why) => {
-      state.audit.push({ id: id('audit'), type: 'plan.invalid', chatTurnId: chatTurn.id, detail: why, createdAt: now() });
+      state.audit.push({ id: id('audit'), type: 'plan.invalid', chatTurnId: chatTurn.id, detail: clampText(why, 2_000), createdAt: now() });
       state.messages.push({
         id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'system',
-        content: `${coordinator?.name ?? chatTurn.agentId}'s plan block could not be read (${why}); no tasks were proposed.`,
+        content: clampText(`${coordinator?.name ?? chatTurn.agentId}'s plan block could not be read (${why}); no tasks were proposed.`, 2_000),
         chatTurnId: chatTurn.id, createdAt: now()
       });
     };
+    const block = message.content.match(PLAN_BLOCK);
+    // An opening fence without a closing one usually means the reply was clamped;
+    // losing the plan silently would look like the feature simply failed.
+    if (!block) return reject('the plan block has no closing fence — the reply may have been truncated');
     let entries;
-    try { entries = JSON.parse(message.content.match(PLAN_BLOCK)[1]); } catch { return reject('invalid JSON'); }
+    try { entries = JSON.parse(block[1]); } catch { return reject('invalid JSON'); }
     if (!Array.isArray(entries) || !entries.length) return reject('expected a non-empty JSON array');
     const skipped = [];
     if (entries.length > PLAN_TASK_CAP) skipped.push(`${entries.length - PLAN_TASK_CAP} beyond the ${PLAN_TASK_CAP}-task cap`);
@@ -629,7 +633,7 @@ export class ConclaveApp {
       const title = clampText(String(entry.title ?? ''), 160).trim();
       if (!title) return skipped.push(`#${index + 1}: missing title`);
       const agent = state.agents.find((candidate) => candidate.id === entry.agentId);
-      if (!agent) return skipped.push(`“${title}”: unknown agent ${String(entry.agentId)}`);
+      if (!agent) return skipped.push(`“${title}”: unknown agent ${clampText(String(entry.agentId), 80)}`);
       const createdAt = now();
       accepted.push({
         originalIndex: index,
@@ -650,20 +654,29 @@ export class ConclaveApp {
     if (!accepted.length) return reject(skipped.join('; ') || 'no valid tasks');
     const byOriginalIndex = new Map(accepted.map((entry) => [entry.originalIndex, entry.task]));
     for (const entry of accepted) {
-      entry.task.dependencies = [...new Set(entry.dependsOn
-        .filter((ref) => Number.isInteger(ref) && ref < entry.originalIndex && byOriginalIndex.has(ref))
-        .map((ref) => byOriginalIndex.get(ref).id))];
+      const kept = [];
+      for (const ref of new Set(entry.dependsOn)) {
+        if (Number.isInteger(ref) && ref < entry.originalIndex && byOriginalIndex.has(ref)) {
+          kept.push(byOriginalIndex.get(ref).id);
+        } else {
+          // A dependency on a skipped or invalid entry must not vanish silently:
+          // the operator would otherwise approve a task missing its prerequisite.
+          skipped.push(`“${entry.task.title}”: dropped dependency on invalid or skipped entry #${Number.isInteger(ref) ? ref + 1 : String(ref)}`);
+        }
+      }
+      entry.task.dependencies = kept;
     }
     state.tasks.unshift(...accepted.map((entry) => entry.task).reverse());
     message.content = message.content.replace(PLAN_BLOCK,
       `[Proposed ${accepted.length} task${accepted.length === 1 ? '' : 's'} — review them in the Board Inbox]`);
     state.audit.push({
       id: id('audit'), type: 'plan.proposed', chatTurnId: chatTurn.id, agentId: chatTurn.agentId,
-      detail: `proposed ${accepted.length}${skipped.length ? `; skipped: ${skipped.join('; ')}` : ''}`, createdAt: now()
+      detail: clampText(`proposed ${accepted.length}${skipped.length ? `; skipped: ${skipped.join('; ')}` : ''}; raw plan: ${block[0]}`, 8_000),
+      createdAt: now()
     });
     state.messages.push({
       id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'system',
-      content: `${coordinator?.name ?? chatTurn.agentId} proposed ${accepted.length} task${accepted.length === 1 ? '' : 's'} — they are waiting in the Board Inbox for your review.${skipped.length ? ` Skipped: ${skipped.join('; ')}.` : ''}`,
+      content: clampText(`${coordinator?.name ?? chatTurn.agentId} proposed ${accepted.length} task${accepted.length === 1 ? '' : 's'} — they are waiting in the Board Inbox for your review.${skipped.length ? ` Skipped: ${skipped.join('; ')}.` : ''}`, 2_000),
       chatTurnId: chatTurn.id, createdAt: now()
     });
   }

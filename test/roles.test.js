@@ -42,7 +42,7 @@ test('US-041: roles endpoint assigns a coordinator and specialist roles with val
   const { app, directory, base } = await makeApp('conclave-roles-', (state) => {
     state.agents = [agentRow('claude', 'Claude'), agentRow('codex', 'Codex')];
   });
-  context.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
+  context.after(async () => { app.processes.running.clear(); await app.close(); await app.store.update(() => {}); await rm(directory, { recursive: true, force: true }); });
 
   const ok = await post(base, '/api/roles', {
     coordinatorId: 'claude',
@@ -92,7 +92,7 @@ test('US-042: a coordinator plan block becomes proposed Inbox tasks with resolve
     state.agents = [agentRow('claude', 'Claude'), agentRow('codex', 'Codex')];
     state.room.coordinatorId = 'claude';
   });
-  context.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
+  context.after(async () => { app.processes.running.clear(); await app.close(); await app.store.update(() => {}); await rm(directory, { recursive: true, force: true }); });
 
   const message = { id: 'msg_ask', source: 'user', sourceName: 'You', type: 'message', content: 'plan it', createdAt: new Date().toISOString() };
   await app.store.update((state) => state.messages.push(message));
@@ -131,7 +131,7 @@ test('plan blocks from a non-coordinator agent are inert text', async (context) 
     state.agents = [agentRow('claude', 'Claude'), agentRow('codex', 'Codex')];
     state.room.coordinatorId = 'claude';
   });
-  context.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
+  context.after(async () => { app.processes.running.clear(); await app.close(); await app.store.update(() => {}); await rm(directory, { recursive: true, force: true }); });
 
   const message = { id: 'msg_ask', source: 'user', sourceName: 'You', type: 'message', content: 'plan it', createdAt: new Date().toISOString() };
   await app.store.update((state) => state.messages.push(message));
@@ -151,7 +151,7 @@ test('proposed coordinator tasks are operator-gated: Dismiss rejects, Mark ready
     state.agents = [agentRow('claude', 'Claude'), agentRow('codex', 'Codex')];
     state.room.coordinatorId = 'claude';
   });
-  context.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
+  context.after(async () => { app.processes.running.clear(); await app.close(); await app.store.update(() => {}); await rm(directory, { recursive: true, force: true }); });
 
   const message = { id: 'msg_ask', source: 'user', sourceName: 'You', type: 'message', content: 'plan it', createdAt: new Date().toISOString() };
   await app.store.update((state) => state.messages.push(message));
@@ -178,4 +178,46 @@ test('proposed coordinator tasks are operator-gated: Dismiss rejects, Mark ready
   assert.equal(applyAfter.status, 'waiting', 'write proposal waits for authority');
   assert.equal(app.store.state.approvals.filter((entry) => entry.taskId === apply.id && entry.status === 'pending').length, 1);
   assert.equal(started.length, 1, 'nothing launched without the operator decision');
+});
+
+test('plan edge cases are surfaced: truncated blocks reject loudly, dropped dependencies are named', async (context) => {
+  const { app, started, directory } = await makeApp('conclave-plan-edges-', (state) => {
+    state.agents = [agentRow('claude', 'Claude'), agentRow('codex', 'Codex')];
+    state.room.coordinatorId = 'claude';
+  });
+  context.after(async () => { app.processes.running.clear(); await app.close(); await app.store.update(() => {}); await rm(directory, { recursive: true, force: true }); });
+
+  // Truncated plan block: opening fence, no closing fence (as after a 20k clamp).
+  const askOne = { id: 'msg_ask1', source: 'user', sourceName: 'You', type: 'message', content: 'plan', createdAt: new Date().toISOString() };
+  await app.store.update((state) => state.messages.push(askOne));
+  const turnOne = await app.createChatTurn(askOne, app.store.state.agents[0]);
+  await app.store.update((state) => state.messages.push({
+    id: 'msg_truncated', source: 'claude', sourceName: 'Claude', type: 'message', chatTurnId: turnOne.id,
+    content: '```conclave-plan\n[{"title": "Lost task", "agentId": "codex"…[truncated]', createdAt: new Date().toISOString()
+  }));
+  await finish(app, started[0]);
+  assert.equal(app.store.state.tasks.length, 0);
+  assert.ok(app.store.state.audit.some((entry) => entry.type === 'plan.invalid' && /closing fence/.test(entry.detail)));
+  assert.ok(app.store.state.messages.some((entry) => entry.source === 'system' && /could not be read/.test(entry.content)));
+
+  // Dependency on a skipped entry is dropped WITH a named note, never silently.
+  const askTwo = { id: 'msg_ask2', source: 'user', sourceName: 'You', type: 'message', content: 'plan again', createdAt: new Date().toISOString() };
+  await app.store.update((state) => state.messages.push(askTwo));
+  const turnTwo = await app.createChatTurn(askTwo, app.store.state.agents[0]);
+  const plan = JSON.stringify([
+    { title: 'Skipped prerequisite', agentId: 'ghost' },
+    { title: 'Dependent task', objective: 'obj', agentId: 'codex', dependsOn: [0] }
+  ]);
+  await app.store.update((state) => state.messages.push({
+    id: 'msg_dropdep', source: 'claude', sourceName: 'Claude', type: 'message', chatTurnId: turnTwo.id,
+    content: `\`\`\`conclave-plan\n${plan}\n\`\`\``, createdAt: new Date().toISOString()
+  }));
+  await finish(app, started[1]);
+  const dependent = app.store.state.tasks.find((task) => task.title === 'Dependent task');
+  assert.ok(dependent, 'valid entry still proposed');
+  assert.deepEqual(dependent.dependencies, []);
+  assert.ok(app.store.state.messages.some((entry) =>
+    entry.source === 'system' && entry.content.includes('dropped dependency on invalid or skipped entry #1')));
+  const proposedAudit = app.store.state.audit.find((entry) => entry.type === 'plan.proposed');
+  assert.match(proposedAudit.detail, /raw plan: /, 'audit preserves the raw approved-against block');
 });

@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFile, stat } from 'node:fs/promises';
-import { detectAgents, buildAgentInvocation, summarizeAgentEvent } from './lib/adapters.js';
+import { detectAgents, buildAgentInvocation, flushAgentSummary, summarizeAgentEvent } from './lib/adapters.js';
 import { IDENTITY_BLOCK, validateIdentity } from './lib/identity.js';
 import { evaluateAutoApproval, validatePolicy } from './lib/policy.js';
 import { ProcessManager } from './lib/process-manager.js';
@@ -284,6 +284,17 @@ export class ConclaveApp {
       if (event.type === 'execution.finished') {
         const execution = state.executions.find((entry) => entry.id === event.executionId);
         const chatTurn = state.chatTurns.find((entry) => entry.executionId === event.executionId);
+        // Plain-text agents (agy) buffer their whole run; land it as one
+        // message here so fenced blocks parse and the feed gets one entry.
+        const flushedSummary = event.agentId ? flushAgentSummary(event.agentId) : null;
+        if (flushedSummary) {
+          const flushAgent = state.agents.find((entry) => entry.id === event.agentId);
+          state.messages.push({
+            id: id('msg'), source: event.agentId, sourceName: flushAgent?.name || event.agentId,
+            type: chatTurn ? 'message' : 'progress', content: clampText(flushedSummary),
+            taskId: event.taskId, chatTurnId: chatTurn?.id, createdAt: event.finishedAt || now()
+          });
+        }
         if (execution) Object.assign(execution, {
           status: event.status, exitCode: event.exitCode, signal: event.signal, finishedAt: event.finishedAt
         });

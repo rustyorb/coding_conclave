@@ -26,16 +26,19 @@ test('Claude adapter maps access to permission mode without bypass flags', () =>
   assert.equal(run.args[run.args.indexOf('--output-format') + 1], 'stream-json');
 });
 
-test('Gemini agent definition launches the gemini-adapter wrapper via Node', () => {
+test('Gemini agent definition launches the Antigravity CLI with mode mapped from access', () => {
   const gemini = AGENT_DEFINITIONS.find((definition) => definition.id === 'gemini');
-  assert.equal(gemini.command, 'node');
-  const run = buildAgentInvocation('gemini', {
-    executable: process.platform === 'win32' ? 'C:\\Program Files\\nodejs\\node.exe' : '/usr/bin/node',
-    prompt: 'Check this', workspace: process.cwd(), accessMode: 'read-only'
+  assert.equal(gemini.command, 'agy');
+  const readOnly = buildAgentInvocation('gemini', {
+    executable: 'agy', prompt: 'Check this', workspace: process.cwd(), accessMode: 'read-only'
   });
-  assert.ok(run.args[0].endsWith('gemini-adapter.js'));
-  assert.ok(run.args.includes('--prompt'));
-  assert.ok(run.args.includes('Check this'));
+  assert.ok(readOnly.args.includes('-p'));
+  assert.ok(readOnly.args.includes('Check this'));
+  assert.deepEqual(readOnly.args.slice(readOnly.args.indexOf('--mode'), readOnly.args.indexOf('--mode') + 2), ['--mode', 'plan']);
+  const write = buildAgentInvocation('gemini', {
+    executable: 'agy', prompt: 'Fix it', workspace: process.cwd(), accessMode: 'workspace-write'
+  });
+  assert.ok(write.args.includes('accept-edits'));
 });
 
 test('resolveExecutable falls back to extra directories when the CLI is off PATH', async () => {

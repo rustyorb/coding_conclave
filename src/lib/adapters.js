@@ -64,13 +64,15 @@ export const AGENT_DEFINITIONS = [
     id: 'gemini',
     name: 'Gemini',
     provider: 'Google',
-    command: 'node',
-    versionArgs: [path.join(currentDir, 'gemini-adapter.js'), '--version'],
+    command: 'agy',
+    versionArgs: ['--version'],
     capabilities: ['repository inspection', 'code generation', 'file editing', 'command execution', 'web research', 'testing'],
     build({ executable, prompt, accessMode }) {
-      const wrapperPath = path.join(currentDir, 'gemini-adapter.js');
-      const args = [wrapperPath, '--prompt', prompt, '--access-mode', accessMode];
-      return { ...invocation(executable, args), format: 'jsonl' };
+      // Antigravity CLI (agy): a real agentic CLI, replacing the API-only
+      // gemini-adapter.js wrapper that could talk but never touch files.
+      const mode = accessMode === 'read-only' ? 'plan' : 'accept-edits';
+      const args = ['-p', prompt, '--mode', mode, '--print-timeout', '10m'];
+      return { ...invocation(executable, args), format: 'text' };
     }
   },
   {
@@ -130,8 +132,26 @@ export function buildAgentInvocation(agentId, options, definitions = AGENT_DEFIN
 }
 
 let grokTextAccumulator = '';
+let geminiTextAccumulator = '';
+
+// Whole-run plain-text summary for agents without a structured stream (agy).
+// Called by the server when an execution finishes; returns null for others.
+export function flushAgentSummary(agentId) {
+  if (agentId !== 'gemini') return null;
+  const text = geminiTextAccumulator.trim();
+  geminiTextAccumulator = '';
+  return text || null;
+}
 
 export function summarizeAgentEvent(agentId, line) {
+  // agy --print emits plain text, not JSONL: accumulate whole-run output and
+  // flush it as one message at execution end (flushAgentSummary), so multi-line
+  // replies stay one message and fenced blocks survive intact. Safe because the
+  // server runs at most one execution per agent at a time.
+  if (agentId === 'gemini') {
+    geminiTextAccumulator += `${line}\n`;
+    return null;
+  }
   try {
     const event = JSON.parse(line);
     if (agentId === 'codex') {

@@ -135,6 +135,31 @@
   <aside id="approvalsDrawer" class="approvals-drawer" aria-label="Approval center" hidden>
     <div class="drawer-head"><div><span class="eyebrow">YOU RETAIN CONTROL</span><h2>Approval Center</h2></div><button type="button" class="close-button" id="closeApprovals">×</button></div>
     <div id="approvals" class="approval-list"></div>
+    <section class="autopilot-section" aria-label="Autopilot policy">
+      <div class="panel-title"><span>AUTOPILOT</span><span class="chip" id="autopilotChip">off</span></div>
+      <form id="policyForm" class="policy-form">
+        <label class="check"><input type="checkbox" id="policyEnabled"> Enable autopilot</label>
+        <label>Auto-approve writes
+          <select id="policyWrites">
+            <option value="off">Off — every write needs you</option>
+            <option value="verified-agents">Verified agents only</option>
+            <option value="all-agents">All installed agents</option>
+          </select>
+        </label>
+        <label>Command allowlist
+          <textarea id="policyAllowlist" rows="3" placeholder="npm test&#10;git status*"></textarea>
+        </label>
+        <p class="fine-print">One pattern per line, * matches anything. Commands containing shell metacharacters (&amp;, |, ;, $, `…) never auto-run.</p>
+        <label class="check"><input type="checkbox" id="policyAutoAccept"> Auto-accept successful runs</label>
+        <div class="policy-grid">
+          <label class="check"><input type="checkbox" id="policyRetry"> Auto-retry failures</label>
+          <label>Max attempts<input type="number" id="policyRetryMax" min="1" max="5" value="2"></label>
+        </div>
+        <label>Max auto-approvals per hour<input type="number" id="policyRateCap" min="1" max="500" value="20"></label>
+        <div class="autopilot-usage" id="autopilotUsage">0 of 20 auto-approvals used this hour</div>
+        <button class="button primary" type="submit">Save policy</button>
+      </form>
+    </section>
   </aside>
 
   <dialog id="taskDialog" class="dialog">
@@ -148,6 +173,7 @@
         <label>Priority<select name="priority"><option value="none">None</option><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option><option value="critical">Critical</option></select></label>
       </div>
       <label>Workspace access<select name="accessMode"><option value="read-only">Read only · starts now</option><option value="workspace-write">Workspace write · requires approval</option></select></label>
+      <label id="taskDependenciesLabel">Depends on <small>(optional · hold Ctrl/Cmd to pick several)</small><select id="taskDependencies" multiple size="4" aria-label="Tasks this task depends on"></select></label>
       <div class="notice"><strong>Explicit handoff</strong><span>Conclave sends only this task, its source context, the workspace path, and the granted access mode.</span></div>
       <div class="dialog-actions"><button type="button" class="button ghost" data-close="taskDialog">Cancel</button><button class="button primary" type="submit" id="taskSubmit">Create task</button></div>
     </form>

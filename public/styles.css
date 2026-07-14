@@ -184,6 +184,7 @@ select, input, dialog textarea { color: var(--text); background: #12101d; border
 .chip.access-write { color: var(--amber); border-color: rgba(247,188,102,.3); }
 .chip.access-read { color: var(--cyan); border-color: rgba(109,216,199,.25); }
 .chip.origin { color: #9ee4ff; border-color: rgba(78,176,220,.3); }
+.chip.deps { color: #cabbff; border-color: rgba(156,124,255,.3); cursor: help; }
 .chip.archived { color: #6d677b; }
 .chip.status-running { color: var(--purple); border-color: rgba(156,124,255,.35); }
 .chip.status-completed { color: var(--cyan); border-color: rgba(109,216,199,.3); }
@@ -262,6 +263,18 @@ select, input, dialog textarea { color: var(--text); background: #12101d; border
 .approval-command { font-family: Consolas, monospace; color: #b8b0c9; background: rgba(0,0,0,.22); border-radius: 6px; padding: 7px; margin-top: 8px; font-size: 9px; max-height: 70px; overflow: auto; }
 .approval-actions { display: flex; gap: 7px; margin-top: 9px; }
 .approval-actions button { flex: 1; }
+
+.autopilot-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.autopilot-section .chip.on { color: var(--cyan); border-color: rgba(109,216,199,.35); background: rgba(109,216,199,.07); }
+.policy-form { display: flex; flex-direction: column; gap: 11px; margin-top: 12px; }
+.policy-form label { display: flex; flex-direction: column; gap: 6px; color: #b8b2c6; font-size: 11px; font-weight: 650; }
+.policy-form label.check { flex-direction: row; align-items: center; font-weight: 500; }
+.policy-form input, .policy-form textarea, .policy-form select { width: 100%; padding: 9px; resize: vertical; }
+.policy-form textarea { color: var(--text); background: #12101d; border: 1px solid var(--border); border-radius: 8px; outline: none; font-family: Consolas, monospace; font-size: 10px; }
+.policy-form input:focus, .policy-form textarea:focus, .policy-form select:focus { border-color: rgba(156,124,255,.5); }
+.policy-form .fine-print { margin-top: -6px; }
+.policy-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: end; }
+.autopilot-usage { color: var(--muted); font-size: 10px; }
 
 /* ---------- dialogs ---------- */
 

@@ -215,6 +215,13 @@ function taskCard(task) {
   const access = `<span class="chip access-${task.accessMode === 'workspace-write' ? 'write' : 'read'}">${task.accessMode === 'workspace-write' ? 'write' : 'read'}</span>`;
   const origin = task.source ? `<span class="chip origin" title="Promoted from: ${esc(task.source.content.slice(0, 300))}">from chat</span>`
     : task.origin === 'message' ? '<span class="chip origin">legacy chat</span>' : '';
+  const dependencies = task.dependencies?.length ? (() => {
+    const summary = task.dependencies.map((depId) => {
+      const dep = state.tasks.find((entry) => entry.id === depId);
+      return dep ? `${dep.title} · ${dep.status}` : `${depId} · missing`;
+    }).join('\n');
+    return `<span class="chip deps" title="${esc(summary)}">deps ${task.dependencies.length}</span>`;
+  })() : '';
   const archivedChip = task.archivedAt ? '<span class="chip archived">archived</span>' : '';
   const status = task.status === 'waiting' ? 'awaiting approval'
     : task.status === 'review-required' ? 'needs review'
@@ -235,7 +242,7 @@ function taskCard(task) {
     actions.push(`<button class="tiny-button" data-unarchive="${task.id}">Unarchive</button>`);
   }
   return `<article class="task-card">
-    <div class="task-chips">${priority}${access}${origin}${archivedChip}</div>
+    <div class="task-chips">${priority}${access}${origin}${dependencies}${archivedChip}</div>
     <h3>${esc(task.title)}</h3><p>${esc(task.objective)}</p>
     <div class="task-meta"><span>${esc(agent?.name || task.agentId)}</span><span>${esc(status)}</span></div>
     ${blocker}
@@ -318,7 +325,49 @@ function renderApprovals() {
       <div class="approval-command">${esc(approval.command)}<br><span>${esc(approval.cwd)}</span></div>
       <div class="approval-actions"><button class="tiny-button reject" data-approval="${approval.id}" data-decision="denied">Deny</button><button class="tiny-button accept" data-approval="${approval.id}" data-decision="approved">Approve</button></div>
     </article>`).join('') : '<div class="blank-state">No actions are waiting.<br>Nothing runs with write or command authority until you approve it.</div>';
+  renderAutopilotStatus();
 }
+
+// Status chip and usage line follow live state; form fields are only populated
+// when the drawer opens or after a save, so edits are never clobbered mid-typing.
+function renderAutopilotStatus() {
+  const policy = state.policy;
+  const chip = $('#autopilotChip');
+  chip.textContent = policy.enabled ? 'on' : 'off';
+  chip.classList.toggle('on', policy.enabled);
+  const used = state.approvals.filter((entry) => entry.decidedBy === 'autopilot' && entry.status === 'auto-approved'
+    && Date.parse(entry.decidedAt) > Date.now() - 3_600_000).length;
+  $('#autopilotUsage').textContent = `${used} of ${policy.maxAutoApprovalsPerHour} auto-approvals used this hour`;
+}
+
+function populatePolicyForm() {
+  const policy = state.policy;
+  $('#policyEnabled').checked = policy.enabled;
+  $('#policyWrites').value = policy.autoApproveWrites;
+  $('#policyAllowlist').value = policy.commandAllowlist.join('\n');
+  $('#policyAutoAccept').checked = policy.autoAcceptReviews;
+  $('#policyRetry').checked = policy.autoRetry.enabled;
+  $('#policyRetryMax').value = policy.autoRetry.maxAttempts;
+  $('#policyRateCap').value = policy.maxAutoApprovalsPerHour;
+}
+
+$('#policyForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const body = {
+    enabled: $('#policyEnabled').checked,
+    autoApproveWrites: $('#policyWrites').value,
+    commandAllowlist: $('#policyAllowlist').value.split('\n').map((line) => line.trim()).filter(Boolean),
+    autoAcceptReviews: $('#policyAutoAccept').checked,
+    autoRetry: { enabled: $('#policyRetry').checked, maxAttempts: Number($('#policyRetryMax').value) },
+    maxAutoApprovalsPerHour: Number($('#policyRateCap').value)
+  };
+  try {
+    await api('/api/policy', { method: 'POST', body: JSON.stringify(body) });
+    toast('Autopilot policy saved');
+    await refresh();
+    populatePolicyForm();
+  } catch (error) { toast(error.message, true); }
+});
 
 function render() {
   renderTopbar();
@@ -359,9 +408,17 @@ $('#messageInput').addEventListener('keydown', (event) => {
 
 // ---------- task dialog (create + promote) ----------
 
+const OPEN_TASK_STATUSES = ['proposed', 'ready', 'waiting', 'active', 'blocked', 'review-required'];
+
 function openTaskDialog({ agentId = null, promoteFrom = null } = {}) {
   const form = $('#taskForm');
   form.reset();
+  const openTasks = state.tasks.filter((task) => !task.archivedAt && OPEN_TASK_STATUSES.includes(task.status));
+  $('#taskDependencies').innerHTML = openTasks.map((task) => {
+    const agent = state.agents.find((entry) => entry.id === task.agentId);
+    return `<option value="${esc(task.id)}">${esc(task.title)} · ${esc(agent?.name || task.agentId)}</option>`;
+  }).join('');
+  $('#taskDependenciesLabel').hidden = !openTasks.length;
   promoteMessageId = promoteFrom?.id || null;
   $('#promoteSource').hidden = !promoteFrom;
   if (promoteFrom) {
@@ -384,6 +441,8 @@ $('#taskForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   const formElement = event.currentTarget;
   const payload = Object.fromEntries(new FormData(formElement));
+  // FormData collapses a multi-select to one value — read the selection explicitly.
+  payload.dependencies = [...$('#taskDependencies').selectedOptions].map((option) => option.value);
   try {
     if (promoteMessageId) await api(`/api/messages/${promoteMessageId}/promote`, { method: 'POST', body: JSON.stringify(payload) });
     else await api('/api/tasks', { method: 'POST', body: JSON.stringify(payload) });
@@ -429,6 +488,7 @@ $('#boardArchived').addEventListener('change', (event) => { boardFilters.archive
 function openApprovals(open) {
   const drawer = $('#approvalsDrawer');
   const shouldOpen = open ?? drawer.hidden;
+  if (shouldOpen && drawer.hidden && state) populatePolicyForm();
   drawer.hidden = !shouldOpen;
   $('#approvalsButton').setAttribute('aria-expanded', String(shouldOpen));
 }

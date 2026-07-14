@@ -49,28 +49,16 @@ export function failedDependencies(byId, task) {
   return fragments;
 }
 
-// The scheduling decision. Pure; the caller applies mutations inside store.update.
-// Scans queued AND waiting tasks for terminally-bad dependencies (block list), then
-// walks queued tasks FIFO by createdAt (tie-break id): merely-unmet deps and
-// not-installed agents are skipped (stay queued), everything else starts while free
-// slots remain. Iteration continues past free===0 so dep-failure blocking still
-// applies to every queued/waiting task.
-export function selectStartable(state, load) {
-  if (state.room.paused) return { start: [], block: [] };
-  const byId = new Map(state.tasks.map((task) => [task.id, task]));
-  const start = [];
-  const block = [];
-  let free = state.room.limits.maxConcurrentRuns - load;
-  const candidates = state.tasks.filter((task) => ['queued', 'waiting'].includes(task.status))
-    .sort((a, b) => a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id < b.id ? -1 : 1);
-  for (const task of candidates) {
-    const failed = failedDependencies(byId, task);
-    if (failed.length) { block.push({ id: task.id, blocker: failed.join(' ') }); continue; }
-    if (task.status !== 'queued') continue;
-    if (unmetDependencies(byId, task).length) continue;
-    const agent = state.agents.find((entry) => entry.id === task.agentId);
-    if (!agent || agent.status !== 'installed') continue;
-    if (free > 0) { start.push(task.id); free -= 1; }
-  }
-  return { start, block };
+// The dependency-failure decision for the current server's vocabulary, where
+// 'ready' is the queued-eligible state and 'waiting' means gated on approval.
+// Pure; the caller applies mutations inside store.update. Returns the tasks
+// whose dependencies can never complete, with the blocker text to apply.
+// Start selection stays in the server's FIFO drainer (startQueuedTasks), which
+// also owns the one-run-per-agent and writer-lock rules.
+export function selectDependencyBlocked(tasks) {
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  return tasks
+    .filter((task) => ['ready', 'waiting'].includes(task.status))
+    .map((task) => ({ id: task.id, blocker: failedDependencies(byId, task).join(' ') }))
+    .filter((entry) => entry.blocker);
 }

@@ -104,6 +104,13 @@ function renderTopbar() {
 
 // ---------- chat page ----------
 
+function agentRoleBadges(agent) {
+  const badges = [];
+  if (state.room.coordinatorId === agent.id) badges.push('<span class="role-badge coordinator">★ coordinator</span>');
+  for (const role of state.room.roles?.[agent.id] ?? []) badges.push(`<span class="role-badge">${esc(role)}</span>`);
+  return badges.length ? `<div class="agent-roles">${badges.join('')}</div>` : '';
+}
+
 function renderAgents() {
   $('#agentList').innerHTML = state.agents.map((agent) => `
     <article class="agent-card ${esc(agent.activity)}">
@@ -112,6 +119,7 @@ function renderAgents() {
         <div class="agent-name"><strong>${esc(agent.name)}</strong><span>${esc(agent.provider)} · ${esc(agent.version || 'not installed')}</span></div>
         <span class="status-pill ${esc(agent.connection)}">${agent.activity === 'running' ? 'working' : esc(agent.connection === 'verified' ? 'verified' : agent.status)}</span>
       </div>
+      ${agentRoleBadges(agent)}
       <div class="agent-action-row">
         <div class="agent-action">${esc(agent.lastAction)}</div>
         <button class="agent-assign" data-assign-agent="${esc(agent.id)}" ${agent.status !== 'installed' ? 'disabled' : ''}>Assign task</button>
@@ -140,9 +148,11 @@ function renderRecipients() {
     ...state.agents.map((agent) => `<button type="button" class="recipient-chip ${selectedRecipientIds.has(agent.id) ? 'active' : ''}" data-recipient="${esc(agent.id)}" aria-pressed="${selectedRecipientIds.has(agent.id)}" ${agent.status !== 'installed' ? 'disabled' : ''}>${esc(agent.name)}</button>`)
   ].join('');
   const selectedNames = state.agents.filter((agent) => selectedRecipientIds.has(agent.id)).map((agent) => agent.name);
+  const coordinator = state.room.coordinatorId
+    ? state.agents.find((agent) => agent.id === state.room.coordinatorId) : null;
   $('#recipientHint').textContent = selectedNames.length
     ? `Visible to the room · ${selectedNames.join(', ')} will be asked to reply (read-only chat)`
-    : 'Visible to the room · no reply requested';
+    : `Visible to the room · no reply requested${coordinator ? ` · tip: ask ★${coordinator.name} to plan work` : ''}`;
 }
 
 function turnByMessage(message) {
@@ -222,7 +232,10 @@ function laneLabel(status) {
 function taskMenuItems(task) {
   const items = [];
   if (!task.archivedAt) {
-    if (task.status === 'proposed') items.push(`<button role="menuitem" data-mark-ready="${esc(task.id)}">Mark ready</button>`);
+    if (task.status === 'proposed') {
+      items.push(`<button role="menuitem" data-mark-ready="${esc(task.id)}">Mark ready</button>`,
+        `<button role="menuitem" data-dismiss="${esc(task.id)}">Dismiss</button>`);
+    }
     if (task.status === 'review-required') {
       items.push(`<button role="menuitem" data-review="${esc(task.id)}" data-accepted="true">Accept</button>`,
         `<button role="menuitem" data-review="${esc(task.id)}" data-accepted="false">Reject</button>`);
@@ -243,7 +256,11 @@ function taskCard(task) {
   const agent = state.agents.find((entry) => entry.id === task.agentId);
   const priority = task.priority && task.priority !== 'none' ? `<span class="chip priority-${esc(task.priority)}">${esc(task.priority)}</span>` : '';
   const access = `<span class="chip access-${task.accessMode === 'workspace-write' ? 'write' : 'read'}">${task.accessMode === 'workspace-write' ? 'write' : 'read'}</span>`;
-  const origin = task.source ? `<span class="chip origin" title="Promoted from: ${esc(task.source.content.slice(0, 300))}">from chat</span>`
+  const proposerName = task.origin === 'coordinator'
+    ? (state.agents.find((entry) => entry.id === task.proposedBy)?.name ?? task.proposedBy) : null;
+  const origin = task.origin === 'coordinator'
+    ? `<span class="chip origin" title="Proposed by the Coordinator${task.source ? `: ${esc(task.source.content.slice(0, 300))}` : ''}">plan · ${esc(proposerName ?? '')}</span>`
+    : task.source ? `<span class="chip origin" title="Promoted from: ${esc(task.source.content.slice(0, 300))}">from chat</span>`
     : task.origin === 'message' ? '<span class="chip origin">legacy chat</span>' : '';
   const dependencies = task.dependencies?.length ? (() => {
     const summary = task.dependencies.map((depId) => {
@@ -259,6 +276,10 @@ function taskCard(task) {
   const blocker = task.status === 'blocked' && task.blocker ? `<div class="task-blocker">${esc(task.blocker)}</div>` : '';
   const actions = [];
   if (!task.archivedAt) {
+    if (task.status === 'proposed') {
+      actions.push(`<button class="tiny-button accept" data-mark-ready="${esc(task.id)}">Mark ready</button>`,
+        `<button class="tiny-button reject" data-dismiss="${esc(task.id)}">Dismiss</button>`);
+    }
     if (task.status === 'review-required') {
       actions.push(`<button class="tiny-button accept" data-review="${esc(task.id)}" data-accepted="true">Accept</button>`,
         `<button class="tiny-button reject" data-review="${esc(task.id)}" data-accepted="false">Reject</button>`);
@@ -521,6 +542,46 @@ $('#taskForm').addEventListener('submit', async (event) => {
   } catch (error) { toast(error.message, true); }
 });
 
+// ---------- roles dialog ----------
+
+const SPECIALIST_ROLES = ['architect', 'implementer', 'researcher', 'reviewer', 'tester', 'security', 'docs', 'critic'];
+
+function openRolesDialog() {
+  const coordinatorSelect = $('#coordinatorSelect');
+  coordinatorSelect.innerHTML = ['<option value="">Human coordinated — you run the room</option>',
+    ...state.agents.map((agent) => `<option value="${esc(agent.id)}" ${agent.status !== 'installed' ? 'disabled' : ''}>${esc(agent.name)}${agent.status !== 'installed' ? ' · unavailable' : ''}</option>`)
+  ].join('');
+  coordinatorSelect.value = state.room.coordinatorId ?? '';
+  $('#rolesGrid').innerHTML = state.agents.map((agent) => `
+    <div class="roles-row">
+      <strong>${esc(agent.name)}</strong>
+      <div class="roles-options">${SPECIALIST_ROLES.map((role) => `
+        <label class="check"><input type="checkbox" data-role-agent="${esc(agent.id)}" value="${esc(role)}"
+          ${(state.room.roles?.[agent.id] ?? []).includes(role) ? 'checked' : ''}> ${esc(role)}</label>`).join('')}
+      </div>
+    </div>`).join('');
+  $('#rolesDialog').showModal();
+}
+
+$('#rolesButton').addEventListener('click', openRolesDialog);
+
+$('#rolesForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const roles = {};
+  $$('#rolesGrid input[type=checkbox]:checked').forEach((box) => {
+    (roles[box.dataset.roleAgent] ??= []).push(box.value);
+  });
+  try {
+    await api('/api/roles', {
+      method: 'POST',
+      body: JSON.stringify({ coordinatorId: $('#coordinatorSelect').value || null, roles })
+    });
+    $('#rolesDialog').close();
+    toast('Roles updated');
+    await refresh();
+  } catch (error) { toast(error.message, true); }
+});
+
 // ---------- other forms ----------
 
 $('#commandForm').addEventListener('submit', async (event) => {
@@ -627,6 +688,10 @@ document.addEventListener('click', async (event) => {
     if (button.dataset.markReady) {
       await api(`/api/tasks/${button.dataset.markReady}/transitions`, { method: 'POST', body: JSON.stringify({ to: 'ready' }) });
       toast('Task marked ready'); await refresh();
+    }
+    if (button.dataset.dismiss) {
+      await api(`/api/tasks/${button.dataset.dismiss}/transitions`, { method: 'POST', body: JSON.stringify({ to: 'rejected' }) });
+      toast('Proposal dismissed'); await refresh();
     }
     if (button.dataset.copyTitle) {
       const task = state.tasks.find((entry) => entry.id === button.dataset.copyTitle);

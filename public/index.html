@@ -37,7 +37,7 @@
     <!-- ============ CHAT ============ -->
     <section id="page-chat" class="page" aria-label="Room chat">
       <aside class="panel agent-rail">
-        <div class="panel-title"><span>PARTICIPANTS</span><button class="text-button" id="scanButton">Rescan</button></div>
+        <div class="panel-title"><span>PARTICIPANTS</span><span class="title-actions"><button class="text-button" id="rolesButton">Roles</button><button class="text-button" id="scanButton">Rescan</button></span></div>
         <div id="agentList" class="agent-list"></div>
         <div class="rail-footer">
           <div class="limit-row"><span>Concurrent runs</span><strong id="concurrency">0 / 3</strong></div>
@@ -176,6 +176,16 @@
       <label id="taskDependenciesLabel">Depends on <small>(optional · hold Ctrl/Cmd to pick several)</small><select id="taskDependencies" multiple size="4" aria-label="Tasks this task depends on"></select></label>
       <div class="notice"><strong>Explicit handoff</strong><span>Conclave sends only this task, its source context, the workspace path, and the granted access mode.</span></div>
       <div class="dialog-actions"><button type="button" class="button ghost" data-close="taskDialog">Cancel</button><button class="button primary" type="submit" id="taskSubmit">Create task</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="rolesDialog" class="dialog">
+    <form id="rolesForm" method="dialog">
+      <div class="dialog-head"><div><span class="eyebrow">ROOM ORGANIZATION</span><h2>Assign roles</h2></div><button type="button" class="close-button" data-close="rolesDialog">×</button></div>
+      <label>Coordinator<select id="coordinatorSelect"><option value="">Human coordinated — you run the room</option></select></label>
+      <div class="notice"><strong>Advisory authority only</strong><span>The Coordinator can propose plans in chat; proposals land in the Board Inbox and nothing runs until you approve each task. It cannot grant access, accept reviews, or change settings.</span></div>
+      <div id="rolesGrid" class="roles-grid"></div>
+      <div class="dialog-actions"><button type="button" class="button ghost" data-close="rolesDialog">Cancel</button><button class="button primary" type="submit">Save roles</button></div>
     </form>
   </dialog>
 

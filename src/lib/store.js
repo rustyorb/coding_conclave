@@ -13,6 +13,8 @@ export function initialState(workspace) {
       workspace,
       mode: 'general-chat',
       paused: false,
+      coordinatorId: null,
+      roles: {},
       createdAt,
       limits: { maxTurnsPerAgent: 12, maxConcurrentRuns: 3, timeoutMinutes: 20 }
     },

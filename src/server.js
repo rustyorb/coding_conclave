@@ -64,17 +64,56 @@ function displayInvocation(invocation) {
   return [invocation.command, ...invocation.args].map(quote).join(' ');
 }
 
+export const SPECIALIST_ROLES = ['architect', 'implementer', 'researcher', 'reviewer', 'tester', 'security', 'docs', 'critic'];
+const PLAN_BLOCK = /```conclave-plan\s*\n([\s\S]*?)```/;
+const PLAN_TASK_CAP = 10;
+
+function agentRoles(state, agentId) {
+  return state.room.roles?.[agentId] ?? [];
+}
+
+function roleSuffix(state, agentId) {
+  const parts = [...(state.room.coordinatorId === agentId ? ['coordinator'] : []), ...agentRoles(state, agentId)];
+  return parts.length ? ` (${parts.join(', ')})` : '';
+}
+
+function identityLines(state, agent) {
+  const lines = [];
+  const roles = agentRoles(state, agent.id);
+  if (state.room.coordinatorId === agent.id) lines.push('You are this room’s Coordinator (advisory: you organize, the operator decides).');
+  if (roles.length) lines.push(`Your roles in this room: ${roles.join(', ')}.`);
+  if (state.room.coordinatorId && state.room.coordinatorId !== agent.id) {
+    const coordinator = state.agents.find((entry) => entry.id === state.room.coordinatorId);
+    lines.push(`Room coordinator: ${coordinator?.name ?? state.room.coordinatorId}.`);
+  }
+  return lines;
+}
+
+function coordinatorPlanLines(state) {
+  const installed = state.agents.filter((entry) => entry.status === 'installed').map((entry) => entry.id);
+  return [
+    '',
+    'You hold no execution or approval authority. When the operator asks you to plan, organize, or delegate work, end your reply with one fenced plan block in exactly this format:',
+    '```conclave-plan',
+    '[{"title": "Short imperative title", "objective": "What done means and what evidence is required", "agentId": "codex", "accessMode": "read-only", "priority": "high", "dependsOn": []}]',
+    '```',
+    `Valid agentId values: ${installed.join(', ') || 'none available'}. accessMode is "read-only" or "workspace-write". priority is critical, high, medium, low, or none. dependsOn lists zero-based indexes of earlier tasks in the same plan. Propose at most ${PLAN_TASK_CAP} tasks.`,
+    'The block becomes proposed tasks in the operator’s Board Inbox; nothing runs until the operator approves each one. Never claim that tasks were created or that work happened.'
+  ];
+}
+
 export function promptForTask(task, agent, state) {
   const teammates = state.agents
     .filter((entry) => entry.id !== agent.id && entry.status === 'installed')
     .map((entry) => {
       const current = entry.currentTaskId && state.tasks.find((item) => item.id === entry.currentTaskId);
-      return `- ${entry.name}: ${entry.activity}${current ? ` on “${clampText(current.title, 120)}”` : ''}`;
+      return `- ${entry.name}${roleSuffix(state, entry.id)}: ${entry.activity}${current ? ` on “${clampText(current.title, 120)}”` : ''}`;
     });
   const recent = state.messages.slice(-8)
     .map((message) => `- ${message.sourceName}: ${clampText(message.content, 240)}`);
   return [
     `You are ${agent.name}, working alongside other coding agents in a Conclave room.`,
+    ...identityLines(state, agent),
     `Workspace: ${state.room.workspace}`,
     `Access granted for this run: ${task.accessMode}.`,
     `Task: ${task.title}`,
@@ -97,12 +136,17 @@ export function promptForTask(task, agent, state) {
 export function promptForChat(message, agent, state) {
   const recent = state.messages.filter((entry) => entry.id !== message.id).slice(-11)
     .map((entry) => `- ${entry.sourceName}: ${clampText(entry.content, 320)}`);
+  const isCoordinator = state.room.coordinatorId === agent.id;
   return [
     `You are ${agent.name}, participating in the general chat of a Conclave room.`,
+    ...identityLines(state, agent),
     `Workspace: ${state.room.workspace}`,
     'This is one read-only conversational turn, not a coding task.',
-    'Do not modify files, claim work, create tasks, or report that implementation was completed.',
-    'If the operator is asking for code changes, explain that they should use Assign task or New task.',
+    'Do not modify files, claim work, or report that implementation was completed.',
+    isCoordinator
+      ? 'You may propose work through a plan block (described below); you cannot create or run tasks directly.'
+      : 'Do not create tasks. If the operator is asking for code changes, explain that they should use Assign task, New task, or ask the Coordinator to plan.',
+    ...(isCoordinator ? coordinatorPlanLines(state) : []),
     '',
     'Recent room conversation (newest last):',
     ...(recent.length ? recent : ['- none']),
@@ -251,6 +295,7 @@ export class ConclaveApp {
           status: event.status, blocker: event.status === 'completed' ? null : `Agent run ${event.status}.`,
           updatedAt: event.finishedAt, executionId: event.executionId
         });
+        if (chatTurn && event.status === 'completed') this.applyCoordinatorPlan(state, chatTurn);
         if (event.agentId) {
           const agent = state.agents.find((entry) => entry.id === event.agentId);
           if (agent) Object.assign(agent, {
@@ -555,6 +600,74 @@ export class ConclaveApp {
     return turn;
   }
 
+  // Turns a completed Coordinator chat turn's ```conclave-plan``` block into
+  // proposed Board Inbox tasks. Advisory only: proposals never run, never create
+  // approvals, and only the operator can Mark ready or Dismiss them. Runs inside
+  // store.update. Plan blocks from non-coordinator agents are inert text.
+  applyCoordinatorPlan(state, chatTurn) {
+    if (!state.room.coordinatorId || chatTurn.agentId !== state.room.coordinatorId) return;
+    const message = state.messages.find((entry) =>
+      entry.chatTurnId === chatTurn.id && entry.source === chatTurn.agentId && PLAN_BLOCK.test(entry.content));
+    if (!message) return;
+    const coordinator = state.agents.find((entry) => entry.id === chatTurn.agentId);
+    const reject = (why) => {
+      state.audit.push({ id: id('audit'), type: 'plan.invalid', chatTurnId: chatTurn.id, detail: why, createdAt: now() });
+      state.messages.push({
+        id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'system',
+        content: `${coordinator?.name ?? chatTurn.agentId}'s plan block could not be read (${why}); no tasks were proposed.`,
+        chatTurnId: chatTurn.id, createdAt: now()
+      });
+    };
+    let entries;
+    try { entries = JSON.parse(message.content.match(PLAN_BLOCK)[1]); } catch { return reject('invalid JSON'); }
+    if (!Array.isArray(entries) || !entries.length) return reject('expected a non-empty JSON array');
+    const skipped = [];
+    if (entries.length > PLAN_TASK_CAP) skipped.push(`${entries.length - PLAN_TASK_CAP} beyond the ${PLAN_TASK_CAP}-task cap`);
+    const accepted = []; // { task, originalIndex, dependsOn }
+    entries.slice(0, PLAN_TASK_CAP).forEach((entry, index) => {
+      if (typeof entry !== 'object' || entry === null) return skipped.push(`#${index + 1}: not an object`);
+      const title = clampText(String(entry.title ?? ''), 160).trim();
+      if (!title) return skipped.push(`#${index + 1}: missing title`);
+      const agent = state.agents.find((candidate) => candidate.id === entry.agentId);
+      if (!agent) return skipped.push(`“${title}”: unknown agent ${String(entry.agentId)}`);
+      const createdAt = now();
+      accepted.push({
+        originalIndex: index,
+        dependsOn: Array.isArray(entry.dependsOn) ? entry.dependsOn : [],
+        task: {
+          id: id('task'), title,
+          objective: clampText(String(entry.objective ?? title), 12_000).trim() || title,
+          agentId: agent.id,
+          accessMode: entry.accessMode === 'workspace-write' ? 'workspace-write' : 'read-only',
+          priority: ['critical', 'high', 'medium', 'low', 'none'].includes(entry.priority) ? entry.priority : 'none',
+          origin: 'coordinator', proposedBy: chatTurn.agentId,
+          source: { messageId: message.id, sourceName: message.sourceName, content: clampText(message.content, 2_000), createdAt: message.createdAt },
+          archivedAt: null, status: 'proposed', dependencies: [], attempts: 0,
+          blocker: null, executionId: null, createdAt, updatedAt: createdAt
+        }
+      });
+    });
+    if (!accepted.length) return reject(skipped.join('; ') || 'no valid tasks');
+    const byOriginalIndex = new Map(accepted.map((entry) => [entry.originalIndex, entry.task]));
+    for (const entry of accepted) {
+      entry.task.dependencies = [...new Set(entry.dependsOn
+        .filter((ref) => Number.isInteger(ref) && ref < entry.originalIndex && byOriginalIndex.has(ref))
+        .map((ref) => byOriginalIndex.get(ref).id))];
+    }
+    state.tasks.unshift(...accepted.map((entry) => entry.task).reverse());
+    message.content = message.content.replace(PLAN_BLOCK,
+      `[Proposed ${accepted.length} task${accepted.length === 1 ? '' : 's'} — review them in the Board Inbox]`);
+    state.audit.push({
+      id: id('audit'), type: 'plan.proposed', chatTurnId: chatTurn.id, agentId: chatTurn.agentId,
+      detail: `proposed ${accepted.length}${skipped.length ? `; skipped: ${skipped.join('; ')}` : ''}`, createdAt: now()
+    });
+    state.messages.push({
+      id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'system',
+      content: `${coordinator?.name ?? chatTurn.agentId} proposed ${accepted.length} task${accepted.length === 1 ? '' : 's'} — they are waiting in the Board Inbox for your review.${skipped.length ? ` Skipped: ${skipped.join('; ')}.` : ''}`,
+      chatTurnId: chatTurn.id, createdAt: now()
+    });
+  }
+
   // Fresh pending workspace-write approval for a task. Runs inside store.update.
   buildWriteApproval(state, task, agent) {
     const preview = buildAgentInvocation(agent.id, {
@@ -804,6 +917,44 @@ export class ConclaveApp {
       const retried = await this.createChatTurn(message, agent, { retryOf: turn.id });
       return json(response, 201, retried);
     }
+    if (request.method === 'POST' && url.pathname === '/api/roles') {
+      const input = await readJsonBody(request);
+      const agentsById = new Map(this.store.state.agents.map((entry) => [entry.id, entry]));
+      const coordinatorId = input.coordinatorId ? String(input.coordinatorId) : null;
+      if (coordinatorId) {
+        const agent = agentsById.get(coordinatorId);
+        if (!agent) throw new Error('Coordinator must be a known agent');
+        if (agent.status !== 'installed') throw new Error(`${agent.name} is not installed and cannot coordinate`);
+      }
+      const roles = {};
+      if (input.roles !== undefined) {
+        if (typeof input.roles !== 'object' || input.roles === null || Array.isArray(input.roles)) {
+          throw new Error('roles must be an object mapping agent ids to role lists');
+        }
+        for (const [agentId, list] of Object.entries(input.roles)) {
+          if (!agentsById.has(agentId)) throw new Error(`Unknown agent ${agentId}`);
+          if (!Array.isArray(list) || list.some((role) => !SPECIALIST_ROLES.includes(role))) {
+            throw new Error(`Roles must be among: ${SPECIALIST_ROLES.join(', ')}`);
+          }
+          if (list.length) roles[agentId] = [...new Set(list)];
+        }
+      }
+      await this.store.update((state) => {
+        state.room.coordinatorId = coordinatorId;
+        state.room.roles = roles;
+        const summary = [
+          coordinatorId ? `${agentsById.get(coordinatorId).name} is now Coordinator (advisory)` : 'The room is human-coordinated',
+          ...Object.entries(roles).map(([agentId, list]) => `${agentsById.get(agentId).name}: ${list.join(', ')}`)
+        ].join(' · ');
+        state.audit.push({ id: id('audit'), type: 'roles.updated', detail: summary, createdAt: now() });
+        state.messages.push({
+          id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'system',
+          content: `Roles updated — ${summary}.`, createdAt: now()
+        });
+      });
+      this.broadcast({ type: 'state.changed', reason: 'roles.updated' });
+      return json(response, 200, { coordinatorId, roles });
+    }
     if (request.method === 'POST' && url.pathname === '/api/tasks/archive-legacy') {
       const terminal = ['completed', 'failed', 'cancelled', 'rejected'];
       const archivedIds = [];
@@ -829,8 +980,18 @@ export class ConclaveApp {
       const input = await readJsonBody(request);
       const task = this.store.state.tasks.find((entry) => entry.id === transitionMatch[1]);
       if (!task) throw new Error('Task not found');
-      if (task.status !== 'proposed' || input.to !== 'ready') {
-        throw new Error(`Cannot transition '${task.status}' to '${String(input.to)}'; the only supported transition is proposed → ready`);
+      if (task.status !== 'proposed' || !['ready', 'rejected'].includes(input.to)) {
+        throw new Error(`Cannot transition '${task.status}' to '${String(input.to)}'; supported transitions are proposed → ready and proposed → rejected`);
+      }
+      if (input.to === 'rejected') {
+        await this.store.update((state) => {
+          const live = state.tasks.find((entry) => entry.id === task.id);
+          Object.assign(live, { status: 'rejected', updatedAt: now() });
+          state.audit.push({ id: id('audit'), type: 'task.transitioned', taskId: task.id, detail: 'proposed → rejected (dismissed)', createdAt: now() });
+        });
+        this.broadcast({ type: 'state.changed', reason: 'task.transitioned', taskId: task.id });
+        await this.startQueuedTasks(); // a dismissed proposal is a terminally-bad dependency
+        return json(response, 200, { ok: true });
       }
       if (!String(task.objective || '').trim()) throw new Error('Task needs a non-empty objective before it can be marked ready');
       const agent = this.store.state.agents.find((entry) => entry.id === task.agentId);

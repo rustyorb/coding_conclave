@@ -68,6 +68,16 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .count-badge.alert { background: rgba(247,188,102,.16); color: var(--amber); }
 .text-button { color: var(--purple); font-size: 11px; letter-spacing: normal; padding: 4px; }
 .text-button:hover { color: #c1b1ff; }
+.title-actions { display: flex; gap: 4px; }
+
+.agent-roles { display: flex; flex-wrap: wrap; gap: 4px; margin: 7px 0 0 43px; }
+.role-badge { font-size: 8px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
+.role-badge.coordinator { color: var(--amber); border-color: rgba(247,188,102,.35); background: rgba(247,188,102,.07); }
+
+.roles-grid { display: flex; flex-direction: column; gap: 12px; margin-bottom: 6px; max-height: 44vh; overflow-y: auto; }
+.roles-row strong { display: block; font-size: 12px; margin-bottom: 6px; }
+.roles-options { display: flex; flex-wrap: wrap; gap: 8px 12px; }
+.roles-options .check { font-size: 10.5px; }
 
 /* ---------- pages ---------- */
 

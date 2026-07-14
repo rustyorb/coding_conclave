@@ -11,6 +11,24 @@ Protocol: see [AGENTS.md](AGENTS.md).
 
 ## Handoffs (newest first)
 
+### claude (Fable 5) — 2026-07-14 15:45 UTC — Personalized participant cards: agents can restyle their own avatar via a chat block
+
+**What changed**
+- `src/lib/identity.js` (new): `validateIdentity` — emoji capped at 8 code points, tagline at 80 chars, color must be strict 6-digit hex (it lands in a style attribute); `IDENTITY_BLOCK` regex.
+- `src/server.js`: `applyIdentityBlock(state, chatTurn)` runs beside `applyCoordinatorPlan` on completed chat turns — an agent ending a reply with a ```conclave-identity``` fenced JSON block restyles its OWN card only (self-scoped by construction; invalid blocks audit `identity.invalid` + a system notice). The block is replaced with `[Updated their participant card]` in the reply. `promptForChat` now tells agents the block exists. `POST /api/agents/:id/identity` (token-gated like all mutations) lets the operator set or `{"reset": true}` an identity. `state.identities` map persisted; migration on boot.
+- `public/avatar-cards.js` (new): default identities for the four CLIs, declared-over-default merge, circular avatar ring + tagline markup (client re-validates color; everything else escaped).
+- `public/app.js`: `renderAgents` uses the ring/tagline markup and sets `--agent-accent` per card. `public/styles.css`: `.avatar-ring` conic glow, `.agent-tagline`, card accent border; agent-top column 34→38px.
+- `test/identity.test.js` (new, 5 tests): validation clamps/rejections (incl. CSS-injection color attempts), self-scoped block application + reply rewrite, invalid-block audit path, operator route incl. reset/unknown/untokened, prompt awareness.
+
+**How to verify**
+- `npm test` → 85/85 pass (run 2026-07-14, exit 0).
+- Live-verified on a scratch instance: all four cards render rings/emoji/taglines from defaults; a declared identity (`POST /api/agents/grok/identity`) overrides its default end-to-end with zero console errors.
+- Operator: restart the live server (from a FRESH terminal — see the API-key note below), hard-refresh, reopen the tokened URL. Then tell the agents in chat that they can restyle their cards — the chat prompt already teaches them the block format.
+
+**Notes**
+- Committed codex's finished chat-feed patch as `c300338` (attributed); its requested operator live-check of the conversation-only feed is still pending.
+- Operator environment note: agent CLIs inherit the SERVER process env (`process-manager.js` spawns with `env: process.env`). A stale `ANTHROPIC_API_KEY` in the server's terminal burned API credits instead of the operator's subscription — candidate punch item 14: strip provider API keys from child env in the adapters unless explicitly configured.
+
 ### codex — 2026-07-14 14:37 UTC — General Chat is conversation-only; awaiting required operator test
 
 **What changed**

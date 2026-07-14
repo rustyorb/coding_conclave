@@ -1,6 +1,7 @@
 import { createRefreshScheduler } from './refresh-scheduler.js';
 import { esc, renderMarkdown } from './markdown.js';
 import { chatFeedMessages } from './chat-feed.js';
+import { agentIdentity, avatarMarkup, taglineMarkup } from './avatar-cards.js';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -110,19 +111,23 @@ function agentRoleBadges(agent) {
 }
 
 function renderAgents() {
-  $('#agentList').innerHTML = state.agents.map((agent) => `
-    <article class="agent-card ${esc(agent.activity)}">
+  $('#agentList').innerHTML = state.agents.map((agent) => {
+    const identity = agentIdentity(agent, state.identities);
+    return `
+    <article class="agent-card ${esc(agent.activity)}" style="--agent-accent:${identity.color}">
       <div class="agent-top">
-        <div class="avatar ${esc(agent.id)}">${esc(initials(agent.name))}</div>
+        ${avatarMarkup(agent, identity, initials(agent.name))}
         <div class="agent-name"><strong>${esc(agent.name)}</strong><span>${esc(agent.provider)} · ${esc(agent.version || 'not installed')}</span></div>
         <span class="status-pill ${esc(agent.connection)}">${agent.activity === 'running' ? 'working' : esc(agent.connection === 'verified' ? 'verified' : agent.status)}</span>
       </div>
+      ${taglineMarkup(identity)}
       ${agentRoleBadges(agent)}
       <div class="agent-action-row">
         <div class="agent-action">${esc(agent.lastAction)}</div>
         <button class="agent-assign" data-assign-agent="${esc(agent.id)}" ${agent.status !== 'installed' ? 'disabled' : ''}>Assign task</button>
       </div>
-    </article>`).join('');
+    </article>`;
+  }).join('');
   const running = state.agents.filter((agent) => agent.activity === 'running').length;
   const maximum = state.room.limits.maxConcurrentRuns;
   $('#concurrency').textContent = `${running} / ${maximum}`;

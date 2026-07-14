@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFile, stat } from 'node:fs/promises';
 import { detectAgents, buildAgentInvocation, summarizeAgentEvent } from './lib/adapters.js';
+import { IDENTITY_BLOCK, validateIdentity } from './lib/identity.js';
 import { evaluateAutoApproval, validatePolicy } from './lib/policy.js';
 import { ProcessManager } from './lib/process-manager.js';
 import { failedDependencies, selectDependencyBlocked, unmetDependencies, validateDependencies } from './lib/scheduler.js';
@@ -191,6 +192,9 @@ export function promptForChat(message, agent, state) {
     clampText(message.content, 12_000),
     '',
     `Reply directly to that message as ${agent.name}. Keep the response useful and concise.`,
+    'Optional: you may restyle your own participant card by ending a reply with a fenced block — ```conclave-identity',
+    '{"emoji": "🦉", "color": "#8de5d6", "tagline": "up to 80 characters"}',
+    '``` — all fields optional, colors are 6-digit hex.',
     'Do not expose secrets or hidden reasoning.'
   ].join('\n');
 }
@@ -219,6 +223,7 @@ export class ConclaveApp {
     await this.store.update((state) => {
       state.agents = agents;
       state.workspace = workspace;
+      state.identities ??= {};
       state.executions.filter((entry) => entry.status === 'running').forEach((entry) => {
         entry.status = 'interrupted';
         entry.finishedAt = now();
@@ -339,7 +344,10 @@ export class ConclaveApp {
           status: event.status, blocker: event.status === 'completed' ? null : `Agent run ${event.status}.`,
           updatedAt: event.finishedAt, executionId: event.executionId
         });
-        if (chatTurn && event.status === 'completed') this.applyCoordinatorPlan(state, chatTurn);
+        if (chatTurn && event.status === 'completed') {
+          this.applyCoordinatorPlan(state, chatTurn);
+          this.applyIdentityBlock(state, chatTurn);
+        }
         if (event.agentId) {
           const agent = state.agents.find((entry) => entry.id === event.agentId);
           if (agent) Object.assign(agent, {
@@ -725,6 +733,46 @@ export class ConclaveApp {
     });
   }
 
+  // Agents may restyle their own participant card by ending a chat reply with a
+  // ```conclave-identity``` block. Cosmetic and self-scoped only: the block can
+  // never name another agent, values are strictly validated, and everything is
+  // rendered escaped on the client — an agent styles its card, nothing else.
+  // Runs inside store.update.
+  applyIdentityBlock(state, chatTurn) {
+    const message = state.messages.find((entry) =>
+      entry.chatTurnId === chatTurn.id && entry.source === chatTurn.agentId && entry.content.includes('```conclave-identity'));
+    if (!message) return;
+    const agent = state.agents.find((entry) => entry.id === chatTurn.agentId);
+    const reject = (why) => {
+      state.audit.push({ id: id('audit'), type: 'identity.invalid', chatTurnId: chatTurn.id, agentId: chatTurn.agentId, detail: clampText(why, 500), createdAt: now() });
+      state.messages.push({
+        id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'system',
+        content: clampText(`${agent?.name ?? chatTurn.agentId}'s card update could not be read (${why}).`, 500),
+        chatTurnId: chatTurn.id, createdAt: now()
+      });
+    };
+    const block = message.content.match(IDENTITY_BLOCK);
+    if (!block) return reject('the identity block has no closing fence — the reply may have been truncated');
+    let input;
+    try { input = JSON.parse(block[1]); } catch { return reject('invalid JSON'); }
+    let identity;
+    try { identity = validateIdentity(input); } catch (error) { return reject(error.message); }
+    state.identities ??= {};
+    state.identities[chatTurn.agentId] = {
+      ...state.identities[chatTurn.agentId], ...identity, updatedAt: now(), source: 'agent'
+    };
+    message.content = message.content.replace(IDENTITY_BLOCK, '[Updated their participant card]').trim();
+    state.audit.push({
+      id: id('audit'), type: 'identity.updated', agentId: chatTurn.agentId, chatTurnId: chatTurn.id,
+      detail: clampText(JSON.stringify(identity), 300), createdAt: now()
+    });
+    state.messages.push({
+      id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'system',
+      content: `${agent?.name ?? chatTurn.agentId} refreshed their participant card.`,
+      chatTurnId: chatTurn.id, createdAt: now()
+    });
+  }
+
   // Fresh pending workspace-write approval for a task. Runs inside store.update.
   buildWriteApproval(state, task, agent) {
     const preview = buildAgentInvocation(agent.id, {
@@ -973,6 +1021,27 @@ export class ConclaveApp {
       if (!agent || agent.status !== 'installed') throw new Error('The agent for this reply is unavailable');
       const retried = await this.createChatTurn(message, agent, { retryOf: turn.id });
       return json(response, 201, retried);
+    }
+    const identityMatch = routeMatch(url.pathname, /^\/api\/agents\/([^/]+)\/identity$/);
+    if (request.method === 'POST' && identityMatch) {
+      const agent = this.store.state.agents.find((entry) => entry.id === identityMatch[1]);
+      if (!agent) throw new Error('Unknown agent');
+      const input = await readJsonBody(request);
+      const identity = input.reset === true ? null : validateIdentity(input);
+      await this.store.update((state) => {
+        state.identities ??= {};
+        if (identity) {
+          state.identities[agent.id] = { ...state.identities[agent.id], ...identity, updatedAt: now(), source: 'operator' };
+        } else {
+          delete state.identities[agent.id];
+        }
+        state.audit.push({
+          id: id('audit'), type: identity ? 'identity.updated' : 'identity.reset',
+          agentId: agent.id, decidedBy: 'user', createdAt: now()
+        });
+      });
+      this.broadcast({ type: 'state.changed', reason: 'identity.updated', agentId: agent.id });
+      return json(response, 200, { identity: this.store.state.identities[agent.id] ?? null });
     }
     if (request.method === 'POST' && url.pathname === '/api/roles') {
       const input = await readJsonBody(request);

@@ -93,9 +93,13 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 #page-chat.active { grid-template-columns: 262px minmax(0, 1fr); }
 .agent-rail { border-width: 0 1px 0 0; padding: 20px 15px; display: flex; flex-direction: column; min-height: 0; }
 .agent-list { display: flex; flex-direction: column; gap: 7px; margin-top: 10px; overflow: auto; }
-.agent-card { padding: 12px; border-radius: 11px; border: 1px solid transparent; background: rgba(255,255,255,.025); }
-.agent-card.running { border-color: rgba(156,124,255,.45); background: rgba(119,83,235,.09); }
-.agent-top { display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 9px; }
+.agent-card { padding: 12px; border-radius: 11px; border: 1px solid transparent; background: rgba(255,255,255,.025); border-left: 2px solid color-mix(in srgb, var(--agent-accent, transparent) 45%, transparent); }
+.agent-card.running { border-color: rgba(156,124,255,.45); border-left-color: var(--agent-accent, rgba(156,124,255,.45)); background: rgba(119,83,235,.09); }
+.agent-top { display: grid; grid-template-columns: 38px 1fr auto; align-items: center; gap: 9px; }
+.avatar-ring { width: 38px; height: 38px; border-radius: 50%; padding: 2px; background: conic-gradient(from 140deg, var(--agent-accent), transparent 55%, var(--agent-accent)); box-shadow: 0 0 10px color-mix(in srgb, var(--agent-accent) 40%, transparent); }
+.agent-card .avatar-ring .avatar { width: 100%; height: 100%; border-radius: 50%; font-size: 16px; background: #14111e; }
+.agent-card.running .avatar-ring { box-shadow: 0 0 16px color-mix(in srgb, var(--agent-accent) 65%, transparent); }
+.agent-tagline { margin: 7px 0 0 47px; color: #a89fc7; font-size: 10px; font-style: italic; line-height: 1.4; }
 .avatar { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 10px; background: linear-gradient(145deg, rgba(156,124,255,.26), rgba(156,124,255,.06)); color: #d6cbff; font-weight: 800; }
 .avatar.claude { background: linear-gradient(145deg, rgba(238,145,98,.28), rgba(238,145,98,.06)); color: #ffc2a2; }
 .avatar.gemini { background: linear-gradient(145deg, rgba(78,176,220,.28), rgba(107,101,225,.08)); color: #9ee4ff; }
@@ -104,7 +108,7 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .status-pill { font-size: 9px; color: var(--cyan); text-transform: uppercase; letter-spacing: .06em; }
 .status-pill.unavailable, .status-pill.error { color: var(--red); }
 .status-pill.unverified { color: var(--amber); }
-.agent-action-row { margin: 9px 0 0 43px; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.agent-action-row { margin: 9px 0 0 47px; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .agent-action { flex: 1; min-width: 0; color: var(--muted); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .agent-assign { flex: 0 0 auto; border: 0; background: none; color: var(--purple); padding: 2px 0; cursor: pointer; font-size: 9px; font-weight: 700; }
 .agent-assign:hover { color: #c1b1ff; }

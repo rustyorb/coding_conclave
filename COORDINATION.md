@@ -11,6 +11,22 @@ Protocol: see [AGENTS.md](AGENTS.md).
 
 ## Handoffs (newest first)
 
+### codex — 2026-07-14 14:37 UTC — General Chat is conversation-only; awaiting required operator test
+
+**What changed**
+- `public/chat-feed.js` (new): defines the General Chat boundary — ordinary conversation plus notices tied to a chat turn.
+- `public/app.js`: `renderFeed()` now applies that boundary instead of rendering the entire room activity ledger. Task progress, delegations, reviews, task blockers, autopilot activity, and workspace notices stay off General Chat and remain available on Board/Runs.
+- `test/chat-feed.test.js` (new): regression coverage for visible conversation/chat-turn notices and hidden task/activity events.
+
+**How to verify**
+- `node --test test/chat-feed.test.js` → 2/2 pass.
+- `npm test` → 80/80 pass.
+- Served scratch smoke: `/`, `/app.js`, `/chat-feed.js`, and `/api/state` all returned 200; the copied real state projected 136 chat entries from 429 total room events.
+- Operator gate still required: hard-refresh the live app, open `#/chat`, confirm task progress/review/delegation cards are gone, send a message to an agent, and confirm the message plus reply stay in Chat.
+
+**Open item**
+- Do not mark this task complete until the operator performs the requested live test and confirms the result. The automated headless browser session timed out, so no browser-pass claim is made.
+
 ### claude (Fable 5) — 2026-07-14 12:30 UTC — Chat upgrade: deep budgeted prompt history + markdown feed; real-agent fleet E2E closes punch item 5
 
 **What changed**

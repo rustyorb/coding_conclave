@@ -1,5 +1,6 @@
 import { createRefreshScheduler } from './refresh-scheduler.js';
 import { esc, renderMarkdown } from './markdown.js';
+import { chatFeedMessages } from './chat-feed.js';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -158,7 +159,7 @@ function turnByMessage(message) {
 }
 
 function renderFeed() {
-  const messages = state.messages;
+  const messages = chatFeedMessages(state.messages);
   $('#feed').innerHTML = messages.length ? messages.map((message) => {
     const sourceClass = message.source === 'user' ? 'user' : message.source === 'system' ? 'system' : message.source;
     const chip = ['message', 'system'].includes(message.type) ? '' : `<span class="type-chip">${esc(message.type)}</span>`;

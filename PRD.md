@@ -2628,7 +2628,9 @@ Before the full rebuild phases below, the current vanilla-stack MVP was upgraded
 - Chat turns support cancel and retry (US-017 slice); tasks gained `priority` and reversible `archive` so legacy chat-noise tasks can be cleared from default views (§37.3 slice).
 - Board lanes map the interim MVP statuses onto the canonical §12.2 lanes: `proposed → Inbox`, `ready`/`waiting → Ready`, `active → In Progress`, `blocked → Blocked`, `review-required → Review`, `completed → Done`; `failed`/`cancelled`/`rejected` appear only under the Closed filter, archived tasks only under the Archived filter.
 
-This bridge intentionally keeps the JSON store, full-state refresh, and coarse SSE ping. Those are replaced by the phases below, which remain the authoritative rebuild plan.
+This bridge intentionally keeps the JSON store and coarse SSE ping. Those are replaced by the phases below, which remain the authoritative rebuild plan.
+
+Second bridge wave (same day, three parallel worktree branches): the autopilot policy engine and dependency scheduler were re-integrated onto the chat-turn model (operator-authored `state.policy`: bounded auto-approval of writes with an hourly rate cap, command allowlist with shell-metacharacter refusal, auto-accept of successful runs, bounded auto-retry; task dependencies with cycle rejection, unmet-dep queueing, and failed-dep blocking that expires pending approvals — the FIFO drainer remains the single scheduler and chat turns stay outside autopilot authority, per §4.7 and §15). `/api/state` now projects executions without raw output (tail + size, capped list) with full output served per-execution — an interim step toward §17.3/§18. The Board gained keyboard-operable per-card action menus, an explicit proposed→ready transition command, and reversible bulk archiving of legacy chat-origin tasks (§37.3).
 
 ### Phase 0 — Contracts, fixtures, and migration safety
 

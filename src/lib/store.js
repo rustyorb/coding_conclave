@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { id, now } from './utils.js';
+import { defaultPolicy } from './policy.js';
 
 export function initialState(workspace) {
   const createdAt = now();
@@ -27,6 +28,7 @@ export function initialState(workspace) {
       createdAt
     }],
     approvals: [],
+    policy: defaultPolicy(),
     executions: [],
     workspace: { status: [], diff: '', refreshedAt: createdAt },
     audit: []
@@ -56,6 +58,8 @@ export class JsonStore {
           mode: 'general-chat',
           limits: { ...defaults.room.limits, ...persisted.room?.limits }
         },
+        policy: { ...defaults.policy, ...persisted.policy,
+          autoRetry: { ...defaults.policy.autoRetry, ...(persisted.policy?.autoRetry ?? {}) } },
         chatTurns: Array.isArray(persisted.chatTurns) ? persisted.chatTurns : []
       };
       this.state.room.workspace = this.workspace;
@@ -78,7 +82,9 @@ export class JsonStore {
       await this.save();
       return result;
     });
-    this.queue = operation.catch(() => {});
+    // Keep the queue alive after a failed update, but surface the failure —
+    // persistent save errors (e.g. disk full) must not vanish silently.
+    this.queue = operation.catch((error) => console.error('store update failed:', error?.message || error));
     return operation;
   }
 

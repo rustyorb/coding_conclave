@@ -14,6 +14,10 @@ export function clampText(value, max = 20_000) {
 }
 
 export async function readJsonBody(request, limit = 1_000_000) {
+  // Require a JSON content-type so a cross-origin "simple request" (text/plain,
+  // which skips the CORS preflight) cannot smuggle a body into a mutating route.
+  const contentType = String(request.headers?.['content-type'] || '');
+  if (!contentType.includes('application/json')) throw new Error('Content-Type must be application/json');
   const chunks = [];
   let size = 0;
   for await (const chunk of request) {

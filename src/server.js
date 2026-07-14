@@ -24,6 +24,20 @@ function json(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
+// Loopback-only. Reject any other Host (e.g. an attacker's DNS-rebinding domain
+// that resolves to 127.0.0.1) so the local API cannot be reached cross-host.
+function isTrustedHost(host) {
+  const hostname = String(host || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
+}
+
+// Block cross-site requests: browsers attach Origin to cross-origin writes, so a
+// present-but-mismatched Origin is a CSRF attempt.
+function isTrustedOrigin(origin, host) {
+  if (!origin) return true;
+  try { return new URL(origin).host === host; } catch { return false; }
+}
+
 function routeMatch(pathname, expression) {
   return pathname.match(expression);
 }
@@ -700,8 +714,13 @@ export class ConclaveApp {
   async handle(request, response) {
     const url = new URL(request.url, 'http://localhost');
     try {
-      if (url.pathname.startsWith('/api/')) await this.handleApi(request, response, url);
-      else await this.serveStatic(response, url.pathname);
+      if (url.pathname.startsWith('/api/')) {
+        if (!isTrustedHost(request.headers.host)) return json(response, 403, { error: 'Untrusted Host header' });
+        if (request.method !== 'GET' && !isTrustedOrigin(request.headers.origin, request.headers.host)) {
+          return json(response, 403, { error: 'Cross-origin request blocked' });
+        }
+        await this.handleApi(request, response, url);
+      } else await this.serveStatic(response, url.pathname);
     } catch (error) {
       json(response, 400, { error: publicError(error) });
     }

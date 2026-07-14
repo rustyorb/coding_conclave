@@ -6,11 +6,27 @@ import { redactSecrets } from './redact.js';
 export class ProcessManager {
   constructor({ onEvent, onEventError, timeoutMinutes = 20 } = {}) {
     this.running = new Map();
+    this.reserved = 0;
+    this.cancelled = new Map(); // executionId → cancel reason, recorded before the kill lands
     this.onEvent = onEvent || (() => {});
     this.onEventError = onEventError || ((error, event) => {
       console.error(`Process event handler failed for ${event.type}: ${error.message}`);
     });
     this.timeoutMinutes = timeoutMinutes;
+  }
+
+  // Slots that are committed to but not yet spawned. Counted alongside running
+  // children so concurrent start attempts cannot both pass a capacity check.
+  get load() {
+    return this.running.size + this.reserved;
+  }
+
+  reserve() {
+    this.reserved += 1;
+  }
+
+  release() {
+    if (this.reserved > 0) this.reserved -= 1;
   }
 
   emit(event) {
@@ -36,7 +52,7 @@ export class ProcessManager {
       agentId,
       kind,
       purpose,
-      command: [invocation.command, ...invocation.args].join(' '),
+      command: redactSecrets([invocation.command, ...invocation.args].join(' ')),
       cwd,
       status: 'running',
       exitCode: null,
@@ -58,9 +74,15 @@ export class ProcessManager {
     child.on('close', (exitCode, signal) => {
       clearTimeout(timer);
       this.running.delete(executionId);
+      // A cancelled child does not always die by signal: taskkill on win32 and
+      // CLIs that trap SIGTERM exit with a plain code (signal null), which must
+      // not be classified 'failed' — a retry policy would resurrect the cancelled run.
+      const cancelReason = this.cancelled.get(executionId) ?? null;
+      this.cancelled.delete(executionId);
       this.emit({
         type: 'execution.finished', executionId, taskId, agentId,
-        exitCode, signal, status: signal ? 'cancelled' : exitCode === 0 ? 'completed' : 'failed', finishedAt: now()
+        exitCode, signal, reason: cancelReason,
+        status: signal || cancelReason ? 'cancelled' : exitCode === 0 ? 'completed' : 'failed', finishedAt: now()
       });
     });
 
@@ -75,6 +97,7 @@ export class ProcessManager {
   cancel(executionId, reason = 'user') {
     const child = this.running.get(executionId);
     if (!child) return false;
+    this.cancelled.set(executionId, reason);
     if (process.platform === 'win32') {
       spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' });
     } else {

@@ -3,7 +3,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFile, stat } from 'node:fs/promises';
 import { detectAgents, buildAgentInvocation, summarizeAgentEvent } from './lib/adapters.js';
+import { evaluateAutoApproval, validatePolicy } from './lib/policy.js';
 import { ProcessManager } from './lib/process-manager.js';
+import { failedDependencies, selectDependencyBlocked, unmetDependencies, validateDependencies } from './lib/scheduler.js';
 import { JsonStore } from './lib/store.js';
 import { inspectWorkspace } from './lib/workspace.js';
 import { clampText, id, now, publicError, readJsonBody } from './lib/utils.js';
@@ -138,6 +140,8 @@ export class ConclaveApp {
         entry.finishedAt = now();
       });
       state.tasks.forEach((task) => {
+        task.dependencies ??= [];
+        task.attempts ??= 0;
         if (task.status !== 'active' && task.status !== 'ready') return;
         task.blocker = task.status === 'active'
           ? 'Conclave restarted while this task was active.'
@@ -197,8 +201,48 @@ export class ConclaveApp {
         if (event.taskId) {
           const task = state.tasks.find((entry) => entry.id === event.taskId);
           if (task) {
-            const autoResolve = task.origin === 'message' && task.accessMode === 'read-only';
-            task.status = event.status === 'completed' ? (autoResolve ? 'completed' : 'review-required') : event.status;
+            // Autopilot governs tasks and commands only — never chat turns.
+            const live = state.policy?.enabled && !state.room.paused;
+            if (event.status === 'completed') {
+              const autoResolve = task.origin === 'message' && task.accessMode === 'read-only';
+              const autoAccept = !autoResolve && live && state.policy.autoAcceptReviews;
+              task.status = autoResolve || autoAccept ? 'completed' : 'review-required';
+              if (autoAccept) {
+                state.audit.push({
+                  id: id('audit'), type: 'task.auto-accepted', taskId: task.id, executionId: event.executionId,
+                  decidedBy: 'autopilot', createdAt: now()
+                });
+                state.messages.push({
+                  id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'autopilot',
+                  content: clampText(`Autopilot accepted “${task.title}” after a successful run.`),
+                  taskId: task.id, createdAt: event.finishedAt
+                });
+              }
+            } else if (event.status === 'failed') {
+              // Auto-retry applies to failed runs only, never to cancelled ones.
+              const gate = live && state.policy.autoRetry.enabled;
+              if (gate && (task.attempts ?? 0) < state.policy.autoRetry.maxAttempts) {
+                task.attempts = (task.attempts ?? 0) + 1;
+                task.status = 'ready';
+                task.blocker = null;
+                state.audit.push({
+                  id: id('audit'), type: 'task.auto-retried', taskId: task.id, executionId: event.executionId,
+                  decidedBy: 'autopilot', detail: `retry ${task.attempts} of ${state.policy.autoRetry.maxAttempts}`, createdAt: now()
+                });
+                state.messages.push({
+                  id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'autopilot',
+                  content: clampText(`Autopilot re-queued “${task.title}” after a failed run (retry ${task.attempts} of ${state.policy.autoRetry.maxAttempts}).`),
+                  taskId: task.id, createdAt: event.finishedAt
+                });
+              } else {
+                task.status = 'failed';
+                if (gate && (task.attempts ?? 0) >= state.policy.autoRetry.maxAttempts) {
+                  task.blocker = `Automatic retries exhausted after ${task.attempts} retries.`;
+                }
+              }
+            } else {
+              task.status = event.status;
+            }
             task.updatedAt = event.finishedAt;
             task.executionId = event.executionId;
           }
@@ -257,7 +301,36 @@ export class ConclaveApp {
     if (event.type === 'execution.finished') await this.startQueuedTasks();
   }
 
+  // Mutation applied to a task whose dependencies can never complete. Runs
+  // inside a store.update mutator. A blocked task can never be started from its
+  // approval, so any pending gate expires (a requeue mints a fresh one).
+  blockForDependencies(state, task, blocker) {
+    Object.assign(task, { status: 'blocked', blocker, updatedAt: now() });
+    state.approvals.filter((entry) => entry.taskId === task.id && entry.status === 'pending')
+      .forEach((entry) => Object.assign(entry, { status: 'expired', decidedAt: now(), decidedBy: 'system', reason: blocker }));
+    state.audit.push({ id: id('audit'), type: 'task.dependency-blocked', taskId: task.id, detail: blocker, createdAt: now() });
+    state.messages.push({
+      id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'blocker',
+      content: clampText(`“${task.title}” is blocked: ${blocker}`), taskId: task.id, createdAt: now()
+    });
+  }
+
+  // Blocks every ready/waiting task whose dependencies reached a terminal bad
+  // status (failed/rejected/cancelled) or vanished. Idempotent.
+  async applyDependencyBlocks() {
+    if (!selectDependencyBlocked(this.store.state.tasks).length) return;
+    const blocked = await this.store.update((state) => {
+      const hits = selectDependencyBlocked(state.tasks);
+      for (const hit of hits) {
+        this.blockForDependencies(state, state.tasks.find((entry) => entry.id === hit.id), hit.blocker);
+      }
+      return hits.map((entry) => entry.id);
+    });
+    for (const taskId of blocked) this.broadcast({ type: 'state.changed', reason: 'task.dependency-blocked', taskId });
+  }
+
   async startQueuedTasks() {
+    await this.applyDependencyBlocks();
     const attempted = new Set();
     while (true) {
       const state = this.store.state;
@@ -265,11 +338,13 @@ export class ConclaveApp {
       if (this.processes.running.size >= state.room.limits.maxConcurrentRuns) return;
       const busyAgents = new Set(state.agents.filter((entry) => entry.activity === 'running').map((entry) => entry.id));
       const writerActive = state.tasks.some((entry) => entry.status === 'active' && entry.accessMode === 'workspace-write');
+      const tasksById = new Map(state.tasks.map((entry) => [entry.id, entry]));
       const candidates = [
         ...state.tasks.filter((entry) => entry.status === 'ready'
           && !attempted.has(`task:${entry.id}`)
           && !busyAgents.has(entry.agentId)
-          && !(entry.accessMode === 'workspace-write' && writerActive))
+          && !(entry.accessMode === 'workspace-write' && writerActive)
+          && unmetDependencies(tasksById, entry).length === 0)
           .map((entry) => ({ kind: 'task', entry })),
         ...state.chatTurns.filter((entry) => entry.status === 'queued'
           && !attempted.has(`chat:${entry.id}`)
@@ -320,7 +395,10 @@ export class ConclaveApp {
     const agentBusyOn = state.tasks.find((entry) =>
       entry.id !== task.id && entry.status === 'active' && entry.agentId === task.agentId);
     const agentBusyChat = state.chatTurns.find((entry) => entry.status === 'active' && entry.agentId === task.agentId);
+    const tasksById = new Map(state.tasks.map((entry) => [entry.id, entry]));
+    const unmet = unmetDependencies(tasksById, task);
     const waitReason = state.room.paused ? 'the room resumes'
+      : unmet.length ? `it is no longer waiting on “${tasksById.get(unmet[0])?.title ?? unmet[0]}”`
       : activeWriter ? `“${activeWriter.title}” releases the workspace; one agent writes at a time`
       : agentBusyOn ? `${agent.name} finishes “${agentBusyOn.title}”; one run per agent at a time`
       : agentBusyChat || agent.activity === 'running' ? `${agent.name} finishes the current chat reply; one run per agent at a time`
@@ -426,6 +504,67 @@ export class ConclaveApp {
     return turn;
   }
 
+  // Fresh pending workspace-write approval for a task. Runs inside store.update.
+  buildWriteApproval(state, task, agent) {
+    const preview = buildAgentInvocation(agent.id, {
+      executable: agent.executable,
+      prompt: promptForTask(task, agent, state),
+      workspace: state.room.workspace,
+      accessMode: task.accessMode
+    });
+    return {
+      id: id('approval'), type: 'agent-write', status: 'pending', taskId: task.id, agentId: agent.id,
+      title: `${agent.name} requests workspace-write access`,
+      detail: task.objective, impact: `May create or modify files under ${state.room.workspace}. The agent sandbox remains scoped to the workspace.`,
+      command: displayInvocation(preview), cwd: state.room.workspace, createdAt: now(), decidedAt: null, decidedBy: null, reason: null
+    };
+  }
+
+  // Marks an approval as decided by the operator-authored policy. Runs inside
+  // store.update. Agents never approve their own authority — the policy is the
+  // operator's standing decision.
+  recordAutoApproval(state, approval, { reason, taskId = null, agentId = null, subject }) {
+    Object.assign(approval, { status: 'auto-approved', decidedAt: now(), decidedBy: 'autopilot', reason });
+    state.audit.push({
+      id: id('audit'), type: 'approval.auto-approved', approvalId: approval.id,
+      taskId, agentId, decidedBy: 'autopilot', reason, createdAt: approval.decidedAt
+    });
+    state.messages.push({
+      id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'autopilot',
+      content: clampText(`Autopilot approved ${subject}: ${reason}.`), taskId, createdAt: approval.decidedAt
+    });
+  }
+
+  // Rolls a decided approval back to pending after startTask throws, so the
+  // request is recoverable from the Approval Center instead of being consumed.
+  async revertFailedStart(taskId, approvalId, error, type) {
+    const detail = publicError(error);
+    await this.store.update((state) => {
+      const approval = state.approvals.find((entry) => entry.id === approvalId);
+      if (approval && ['approved', 'auto-approved'].includes(approval.status)) {
+        Object.assign(approval, { status: 'pending', decidedAt: null, decidedBy: null, reason: null });
+      }
+      const task = state.tasks.find((entry) => entry.id === taskId);
+      if (task?.status === 'active' && !task.executionId) {
+        Object.assign(task, { status: 'waiting', updatedAt: now() });
+        const agent = state.agents.find((entry) => entry.id === task.agentId);
+        if (agent?.currentTaskId === taskId) Object.assign(agent, { activity: 'idle', currentTaskId: null });
+      }
+      state.audit.push({ id: id('audit'), type, approvalId, taskId, detail, createdAt: now() });
+      state.messages.push({
+        id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'autopilot',
+        content: clampText(`Could not start the run (${detail}); the request was returned to the Approval Center for manual review.`),
+        taskId, createdAt: now()
+      });
+    });
+    this.broadcast({ type: 'state.changed', reason: type, taskId });
+  }
+
+  async startTaskViaAutopilot(taskId, approvalId) {
+    try { await this.startTask(taskId); }
+    catch (error) { await this.revertFailedStart(taskId, approvalId, error, 'autopilot.start-failed'); }
+  }
+
   async createTask(input) {
     const title = clampText(input.title || 'Untitled task', 160).trim();
     const objective = clampText(input.objective, 12_000).trim();
@@ -435,34 +574,43 @@ export class ConclaveApp {
     if (!agent) throw new Error('Select a supported agent');
     if (agent.status !== 'installed') throw new Error(`${agent.name} is unavailable`);
     const priority = ['critical', 'high', 'medium', 'low', 'none'].includes(input.priority) ? input.priority : 'none';
+    const dependencies = validateDependencies(this.store.state.tasks, input.dependencies, null);
     const createdAt = now();
     const task = {
       id: id('task'), title, objective, agentId: agent.id, accessMode, priority,
       origin: ['message', 'promoted'].includes(input.origin) ? input.origin : 'operator',
       source: input.source || null, archivedAt: null,
       status: accessMode === 'workspace-write' ? 'waiting' : 'ready',
-      dependencies: [], blocker: null, executionId: null, createdAt, updatedAt: createdAt
+      dependencies, attempts: 0, blocker: null, executionId: null, createdAt, updatedAt: createdAt
     };
-    const preview = accessMode === 'workspace-write' ? buildAgentInvocation(agent.id, {
-      executable: agent.executable,
-      prompt: promptForTask(task, agent, this.store.state),
-      workspace: this.store.state.room.workspace,
-      accessMode
-    }) : null;
-    await this.store.update((state) => {
+    const outcome = await this.store.update((state) => {
       state.tasks.unshift(task);
       state.audit.push({ id: id('audit'), type: 'task.created', taskId: task.id, agentId: agent.id, createdAt });
-      if (accessMode === 'workspace-write') {
-        state.approvals.unshift({
-          id: id('approval'), type: 'agent-write', status: 'pending', taskId: task.id, agentId: agent.id,
-          title: `${agent.name} requests workspace-write access`,
-          detail: objective, impact: `May create or modify files under ${state.room.workspace}. The agent sandbox remains scoped to the workspace.`,
-          command: displayInvocation(preview), cwd: state.room.workspace, createdAt, decidedAt: null
-        });
+      const approval = accessMode === 'workspace-write' ? this.buildWriteApproval(state, task, agent) : null;
+      if (approval) state.approvals.unshift(approval);
+      const failed = failedDependencies(new Map(state.tasks.map((entry) => [entry.id, entry])), task);
+      if (failed.length) {
+        this.blockForDependencies(state, task, failed.join(' '));
+        return { blocked: true, autoApprovedId: null };
       }
+      if (approval) {
+        const verdict = evaluateAutoApproval(state, approval, { running: this.processes.running.size });
+        if (verdict.code === 'rate-capped') {
+          state.audit.push({ id: id('audit'), type: 'autopilot.rate-capped', approvalId: approval.id, createdAt: now() });
+        }
+        if (verdict.allow) {
+          this.recordAutoApproval(state, approval, {
+            reason: verdict.reason, taskId: task.id, agentId: agent.id,
+            subject: `workspace-write for ${agent.name} on “${task.title}”`
+          });
+          return { blocked: false, autoApprovedId: approval.id };
+        }
+      }
+      return { blocked: false, autoApprovedId: null };
     });
     this.broadcast({ type: 'state.changed', reason: 'task.created', taskId: task.id });
-    if (accessMode === 'read-only') await this.startTask(task.id);
+    if (outcome.autoApprovedId) await this.startTaskViaAutopilot(task.id, outcome.autoApprovedId);
+    else if (!outcome.blocked && accessMode === 'read-only') await this.startTask(task.id);
     return task;
   }
 
@@ -475,6 +623,7 @@ export class ConclaveApp {
       if (approval.status !== 'pending') throw new Error('Approval request was already decided');
       approval.status = decision;
       approval.decidedAt = now();
+      approval.decidedBy = 'user';
       state.audit.push({ id: id('audit'), type: `approval.${decision}`, approvalId, createdAt: approval.decidedAt });
       if (approval.taskId && decision === 'denied') {
         const task = state.tasks.find((entry) => entry.id === approval.taskId);
@@ -484,6 +633,9 @@ export class ConclaveApp {
     if (decision === 'approved') {
       if (approval.type === 'agent-write') await this.startTask(approval.taskId);
       if (approval.type === 'command') this.startCommand(approval);
+    } else if (approval.taskId) {
+      // A rejected task is a terminally-bad dependency: re-evaluate dependents.
+      await this.startQueuedTasks();
     }
     this.broadcast({ type: 'state.changed', reason: `approval.${decision}`, approvalId });
     return approval;
@@ -671,8 +823,25 @@ export class ConclaveApp {
         const task = state.tasks.find((entry) => entry.id === requeueMatch[1]);
         if (!task) throw new Error('Task not found');
         if (task.status !== 'blocked') throw new Error('Only blocked tasks can be requeued');
-        Object.assign(task, { status: 'ready', blocker: null, updatedAt: now() });
         state.audit.push({ id: id('audit'), type: 'task.requeued', taskId: task.id, createdAt: now() });
+        // A dep-blocked task re-checks its gate: still-failed dependencies re-block it.
+        const failed = failedDependencies(new Map(state.tasks.map((entry) => [entry.id, entry])), task);
+        if (failed.length) {
+          this.blockForDependencies(state, task, failed.join(' '));
+          return;
+        }
+        // A write task whose approval expired while blocked must not restart on
+        // its own authority: it returns to waiting with a fresh pending approval.
+        const hasAuthority = task.accessMode !== 'workspace-write'
+          || state.approvals.some((entry) => entry.taskId === task.id && ['approved', 'auto-approved'].includes(entry.status));
+        if (!hasAuthority) {
+          const agent = state.agents.find((entry) => entry.id === task.agentId);
+          if (!agent || agent.status !== 'installed') throw new Error('Assigned agent is unavailable');
+          Object.assign(task, { status: 'waiting', blocker: null, updatedAt: now() });
+          state.approvals.unshift(this.buildWriteApproval(state, task, agent));
+          return;
+        }
+        Object.assign(task, { status: 'ready', blocker: null, updatedAt: now() });
       });
       this.broadcast({ type: 'state.changed', reason: 'task.requeued', taskId: requeueMatch[1] });
       await this.startQueuedTasks();
@@ -688,7 +857,27 @@ export class ConclaveApp {
         task.updatedAt = now();
       });
       this.broadcast({ type: 'state.changed', reason: 'task.reviewed', taskId: reviewMatch[1] });
+      // The verdict changes dependents: completed deps free them, rejected deps block them.
+      await this.startQueuedTasks();
       return json(response, 200, { ok: true });
+    }
+    if (request.method === 'POST' && url.pathname === '/api/policy') {
+      const policy = validatePolicy(await readJsonBody(request));
+      await this.store.update((state) => {
+        state.policy = policy;
+        state.audit.push({ id: id('audit'), type: 'policy.updated', createdAt: now() });
+        state.messages.push({
+          id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'system',
+          content: `Autopilot policy updated: ${policy.enabled ? 'enabled' : 'disabled'} · auto-approve writes ${policy.autoApproveWrites}`
+            + ` · ${policy.commandAllowlist.length} allowlisted command pattern${policy.commandAllowlist.length === 1 ? '' : 's'}`
+            + ` · auto-accept reviews ${policy.autoAcceptReviews ? 'on' : 'off'}`
+            + ` · auto-retry ${policy.autoRetry.enabled ? `up to ${policy.autoRetry.maxAttempts} attempt${policy.autoRetry.maxAttempts === 1 ? '' : 's'}` : 'off'}`
+            + ` · at most ${policy.maxAutoApprovalsPerHour} auto-approvals per hour.`,
+          createdAt: now()
+        });
+      });
+      this.broadcast({ type: 'state.changed', reason: 'policy.updated' });
+      return json(response, 200, this.store.state.policy);
     }
     if (request.method === 'POST' && url.pathname === '/api/commands') {
       const input = await readJsonBody(request);
@@ -698,10 +887,19 @@ export class ConclaveApp {
       const approval = {
         id: id('approval'), type: 'command', status: 'pending', title: 'Local command approval',
         detail: purpose, impact: 'Runs exactly as entered inside the active project workspace.',
-        command, cwd: this.store.state.room.workspace, createdAt: now(), decidedAt: null
+        command, cwd: this.store.state.room.workspace, createdAt: now(), decidedAt: null, decidedBy: null, reason: null
       };
-      await this.store.update((state) => state.approvals.unshift(approval));
-      this.broadcast({ type: 'state.changed', reason: 'approval.created', approvalId: approval.id });
+      const verdict = await this.store.update((state) => {
+        state.approvals.unshift(approval);
+        const evaluated = evaluateAutoApproval(state, approval, { running: this.processes.running.size });
+        if (evaluated.code === 'rate-capped') {
+          state.audit.push({ id: id('audit'), type: 'autopilot.rate-capped', approvalId: approval.id, createdAt: now() });
+        }
+        if (evaluated.allow) this.recordAutoApproval(state, approval, { reason: evaluated.reason, subject: `command “${approval.command}”` });
+        return evaluated;
+      });
+      if (verdict.allow) this.startCommand(approval);
+      this.broadcast({ type: 'state.changed', reason: verdict.allow ? 'approval.auto-approved' : 'approval.created', approvalId: approval.id });
       return json(response, 201, approval);
     }
     if (request.method === 'POST' && url.pathname === '/api/room/pause') {

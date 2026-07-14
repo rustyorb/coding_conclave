@@ -2,17 +2,17 @@
 
 **A local-first collaboration environment where multiple AI coding agents can communicate, coordinate, and work alongside a human operator.**
 
-> Project status: runnable MVP foundation. Codex and Claude Code have been verified end to end as real subprocesses in this workspace. Gemini CLI has a current adapter and is detected locally, but remains marked unverified until it completes a real run. Availability and output are never simulated.
+> Project status: working app with the chat/work separation live. Codex, Claude Code, Gemini (API wrapper), and Grok are detected and run as real subprocesses. Availability and output are never simulated. The authoritative rebuild specification lives in [PRD.md](PRD.md); implementation state and open work are tracked in [COORDINATION.md](COORDINATION.md).
 
 ## Run the local app
 
-Conclave currently has no third-party runtime dependencies. It requires Node.js 22 or newer.
+Conclave has no third-party runtime dependencies. It requires Node.js 22 or newer.
 
 ```powershell
 npm start
 ```
 
-Open `http://127.0.0.1:4317`. By default, Conclave scopes the room to the directory from which it is launched. Set `CONCLAVE_WORKSPACE` to start with another project:
+Open `http://127.0.0.1:4317`. By default, Conclave scopes the room to the directory from which it is launched. Set `CONCLAVE_WORKSPACE` to start with another project, and `CONCLAVE_STATE` to use an alternate state file (useful for trying things without touching your live room):
 
 ```powershell
 $env:CONCLAVE_WORKSPACE = 'C:\path\to\project'
@@ -25,40 +25,27 @@ Run the regression suite with:
 npm test
 ```
 
-### Implemented in this slice
+## The one rule: chat is conversation, tasks are work
 
-- Live detection and version reporting for installed Codex, Claude Code, and Gemini CLI executables, distinct from verified provider connectivity
-- Modular adapter contract with provider-specific headless, structured-output, cancellation, and access flags
-- Read-only agent tasks and approval-gated workspace-write tasks
-- Real-time subprocess output over Server-Sent Events
-- Shared room messages with explicit agent recipient controls
-- Persistent tasks, messages, approvals, executions, and audit events in `.conclave/state.json`
-- Room pause, individual interruption, task review, and configurable concurrency/timeout limits
-- Approval-gated local command console
-- Git working-tree status and diff visibility
-- Common secret-pattern redaction before output reaches logs or the UI
+Sending a message — to no one, to one agent, or to Everyone — creates **chat replies, never tasks**. Chat turns always run read-only; the server ignores any write-access request on the message API. Work exists only when you explicitly create it: **New task**, **Assign task** on an agent card, or **→ Task** (promote) on a chat message. Promotion snapshots the source message onto the task, and promoted tasks always end in operator review.
 
-### How task assignment works
+## The app is four pages plus a drawer
 
-Anything an agent does happens through a task; there are two ways to create one:
+| Surface | What it does |
+|---|---|
+| **Chat** (`#/chat`) | Participants rail, the room feed, pending-reply chips (with × cancel and retry on failure), and a composer with a "Reply from" selector: No one / Everyone / per-agent. No access controls here — chat can't write. |
+| **Board** (`#/board`) | Full-page Kanban: Inbox / Ready / In Progress / Blocked / Review / Done, plus Closed and Archived filters, text/agent filters, priority and access chips, and per-card actions (accept, reject, interrupt, requeue, archive). |
+| **Runs** (`#/runs`) | Every execution — chat replies, task runs, approved commands — with live output, cancellation, and the approval-gated command console. |
+| **Workspace** (`#/workspace`) | Canonical path, Git branch, changed files, and the current diff. Explicitly degrades ("Not a Git workspace") for plain folders. |
+| **Approvals** (drawer) | Reachable from every page with a badge. Nothing gets write or command authority until it is decided here — by you, or by an autopilot policy you authored. |
 
-1. **Chat with recipients.** Selecting one or more agent chips on the composer turns the message
-   into one task per selected agent (the message is the objective; the title is its first
-   sentence). With the default read-only access these run immediately and auto-resolve when the
-   agent's reply lands in the feed. With workspace-write access they wait in the Approval Center
-   first.
-2. **The task form** (`New task` or an agent card's `Assign task`) with an explicit title,
-   objective, agent, and access mode.
+### Task lifecycle
 
-Lifecycle: `ready` tasks start as soon as their agent is free — one run per agent at a time, one
-workspace-write run per room at a time, capped by the concurrency limit; anything that cannot
-start yet queues with a room message saying why. Finished workspace-write and form-created runs
-land in `review-required` for Accept/Reject. Tasks interrupted by a server restart (or a failed
-queue start) become `blocked` and show a Requeue button on the board.
+`ready` tasks start as soon as their agent is free — one run per agent at a time (chat reply or task), one direct workspace-write run per room at a time, capped by the room concurrency limit; anything that cannot start queues with a message saying exactly why. Successful write and operator-created runs land in `review-required` for Accept/Reject. Tasks interrupted by a server restart become `blocked` with a Requeue button. Terminal tasks (`completed`/`failed`/`cancelled`/`rejected`) can be archived reversibly.
 
 ### Current safety boundary
 
-The user approves a write-capable agent invocation before it starts. The adapter then relies on the provider CLI's own workspace permission mode (`workspace-write`, `acceptEdits`, or `auto_edit`) while Conclave records the invocation and resulting Git diff. Per-tool interactive approval inside a running provider session is not yet normalized across providers, so the UI does not claim that capability. Use read-only mode for inspection and reserve write mode for trusted workspaces.
+The user approves a write-capable agent invocation before it starts. The adapter then relies on the provider CLI's own workspace permission mode (`workspace-write`, `acceptEdits`, or `auto_edit`) while Conclave records the invocation and resulting Git diff. The local API binds to loopback, rejects untrusted `Host` headers (DNS-rebinding), blocks cross-origin mutations, and requires JSON content types on request bodies. Streamed output passes a secret redactor before persistence or display. Per-tool interactive approval inside a running provider session is not yet normalized across providers, so the UI does not claim that capability. Use read-only mode for inspection and reserve write mode for trusted workspaces.
 
 ## Overview
 

@@ -4,6 +4,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 let state = null;
 let activeExecutionId = null;
+const outputCache = new Map(); // execution id -> { output, status }
 let promoteMessageId = null;
 const selectedRecipientIds = new Set();
 const boardFilters = { text: '', agentId: '', closed: false, archived: false };
@@ -266,25 +267,54 @@ function renderBoard() {
 
 // ---------- runs page ----------
 
+function formatOutputSize(characters) {
+  if (characters < 1024) return `${characters} B`;
+  if (characters < 1024 * 1024) return `${Math.round(characters / 1024)} KB`;
+  return `${(characters / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function loadRunOutput(execution) {
+  const cached = outputCache.get(execution.id);
+  // Terminal output is immutable: once cached with a terminal status, never re-fetch.
+  if (cached && cached.status !== 'running' && execution.status !== 'running') return;
+  try {
+    const body = await api(`/api/executions/${execution.id}/output`);
+    outputCache.set(execution.id, { output: body.output, status: body.status });
+    if (activeExecutionId !== execution.id) return; // stale response; user moved on
+    const output = $('#consoleOutput');
+    output.textContent = body.output || 'Process started; waiting for output…';
+    output.scrollTop = output.scrollHeight;
+  } catch {
+    // Keep the outputTail placeholder; the next refresh pass retries.
+  }
+}
+
 function renderRuns() {
-  $('#runCount').textContent = state.executions.length;
+  const total = state.executionsTotal ?? state.executions.length;
+  $('#runCount').textContent = total;
   if (!activeExecutionId && state.executions.length) activeExecutionId = state.executions[0].id;
   const active = state.executions.find((entry) => entry.id === activeExecutionId) || state.executions[0];
+  const truncationNote = total > state.executions.length
+    ? `<div class="blank-state">Showing latest ${state.executions.length} of ${total} runs</div>` : '';
   $('#runList').innerHTML = state.executions.length ? state.executions.map((execution) => `
     <button class="run-item ${execution.id === active?.id ? 'active' : ''} status-${esc(execution.status)}" data-execution="${execution.id}">
       <strong>${esc(execution.agentId || 'command')}</strong>
       <span>${esc(execution.kind || 'agent')} · ${esc(execution.status)}</span>
       <span class="run-time">${relativeTime(execution.startedAt)}</span>
-    </button>`).join('') : '<div class="blank-state">Real executions appear here after chat replies, tasks, or approved commands.</div>';
+    </button>`).join('') + truncationNote : '<div class="blank-state">Real executions appear here after chat replies, tasks, or approved commands.</div>';
   if (active) {
+    activeExecutionId = active.id;
     const cancel = active.status === 'running' ? `<button class="tiny-button reject" data-cancel-execution="${active.id}">Cancel run</button>` : '';
+    const size = active.outputSize ?? 0;
     $('#runMeta').innerHTML = `
-      <div class="run-meta-row"><span class="chip">${esc(active.kind || 'agent')}</span><span class="chip status-${esc(active.status)}">${esc(active.status)}</span>${active.exitCode === null || active.exitCode === undefined ? '' : `<span class="chip">exit ${esc(active.exitCode)}</span>`}${cancel}</div>
+      <div class="run-meta-row"><span class="chip">${esc(active.kind || 'agent')}</span><span class="chip status-${esc(active.status)}">${esc(active.status)}</span>${active.exitCode === null || active.exitCode === undefined ? '' : `<span class="chip">exit ${esc(active.exitCode)}</span>`}<span class="chip">${esc(formatOutputSize(size))} captured</span>${cancel}</div>
       <div class="run-meta-purpose">${esc(active.purpose || '')}</div>
       <div class="run-meta-cmd">${esc(active.command)}<br><span>${esc(active.cwd)}</span></div>`;
-    $('#consoleOutput').textContent = active.output || 'Process started; waiting for output…';
+    const cached = outputCache.get(active.id);
+    $('#consoleOutput').textContent = (cached ? cached.output : active.outputTail) || 'Process started; waiting for output…';
     const output = $('#consoleOutput');
     output.scrollTop = output.scrollHeight;
+    loadRunOutput(active);
   } else {
     $('#runMeta').innerHTML = '';
     $('#consoleOutput').textContent = 'No executions yet.';

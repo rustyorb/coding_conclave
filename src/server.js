@@ -42,6 +42,21 @@ function routeMatch(pathname, expression) {
   return pathname.match(expression);
 }
 
+// The API projection strips captured output from executions (each can hold up to
+// 120k chars) so /api/state stays small; full output is served per-execution.
+const STATE_EXECUTION_LIMIT = 200;
+const OUTPUT_TAIL_CHARS = 500;
+
+function projectStateForApi(state) {
+  const executionsTotal = state.executions.length;
+  const executions = state.executions.slice(0, STATE_EXECUTION_LIMIT).map((execution) => {
+    const { output, ...rest } = execution;
+    const text = output || '';
+    return { ...rest, outputSize: text.length, outputTail: text.slice(-OUTPUT_TAIL_CHARS) };
+  });
+  return { ...state, executions, executionsTotal };
+}
+
 function displayInvocation(invocation) {
   const quote = (value) => /\s/.test(String(value)) ? JSON.stringify(String(value)) : String(value);
   return [invocation.command, ...invocation.args].map(quote).join(' ');
@@ -482,7 +497,16 @@ export class ConclaveApp {
   }
 
   async handleApi(request, response, url) {
-    if (request.method === 'GET' && url.pathname === '/api/state') return json(response, 200, this.store.snapshot());
+    if (request.method === 'GET' && url.pathname === '/api/state') {
+      return json(response, 200, projectStateForApi(this.store.snapshot()));
+    }
+    const outputMatch = routeMatch(url.pathname, /^\/api\/executions\/([^/]+)\/output$/);
+    if (request.method === 'GET' && outputMatch) {
+      const execution = this.store.state.executions.find((entry) => entry.id === outputMatch[1]);
+      if (!execution) throw new Error('Execution not found');
+      const output = execution.output || '';
+      return json(response, 200, { id: execution.id, status: execution.status, outputSize: output.length, output });
+    }
     if (request.method === 'GET' && url.pathname === '/api/events') {
       response.writeHead(200, {
         'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive'

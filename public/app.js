@@ -305,6 +305,12 @@ function renderBoard() {
   const tasks = visibleTasks();
   const lanes = [...LANES];
   if (boardFilters.closed || boardFilters.archived) lanes.push({ key: 'closed', title: 'Closed', statuses: CLOSED_STATUSES });
+  // Rebuilding innerHTML kills any open card menu (~every refresh while a run
+  // streams); remember which menu is open, and whether focus was inside it,
+  // to restore both after the rebuild.
+  const openMenuToggle = document.querySelector('.task-menu:not([hidden])')?.previousElementSibling;
+  const openMenuTaskId = openMenuToggle?.dataset.taskMenu ?? null;
+  const focusWasInMenu = !!document.activeElement?.closest('.task-menu');
   $('#taskBoard').innerHTML = lanes.map((lane) => {
     const laneTasks = tasks.filter((task) => lane.statuses.includes(task.status)
       && (lane.key === 'closed' || !task.archivedAt || boardFilters.archived));
@@ -324,6 +330,15 @@ function renderBoard() {
   agentSelect.innerHTML = ['<option value="">All agents</option>',
     ...state.agents.map((agent) => `<option value="${esc(agent.id)}">${esc(agent.name)}</option>`)].join('');
   agentSelect.value = previous;
+  if (openMenuTaskId) {
+    const toggle = document.querySelector(`[data-task-menu="${CSS.escape(openMenuTaskId)}"]`);
+    const menu = toggle?.nextElementSibling;
+    if (menu) {
+      menu.hidden = false;
+      toggle.setAttribute('aria-expanded', 'true');
+      if (focusWasInMenu) menu.querySelector('button')?.focus();
+    }
+  }
 }
 
 // ---------- runs page ----------
@@ -421,8 +436,9 @@ function renderAutopilotStatus() {
   const chip = $('#autopilotChip');
   chip.textContent = policy.enabled ? 'on' : 'off';
   chip.classList.toggle('on', policy.enabled);
-  const used = state.approvals.filter((entry) => entry.decidedBy === 'autopilot' && entry.status === 'auto-approved'
-    && Date.parse(entry.decidedAt) > Date.now() - 3_600_000).length;
+  // Mirrors policy.js autoApprovalsInWindow: audit events, so reverts don't refund seats.
+  const used = state.audit.filter((entry) => entry.type === 'approval.auto-approved'
+    && Date.parse(entry.createdAt) > Date.now() - 3_600_000).length;
   $('#autopilotUsage').textContent = `${used} of ${policy.maxAutoApprovalsPerHour} auto-approvals used this hour`;
 }
 
@@ -629,8 +645,10 @@ function openApprovals(open) {
   if (shouldOpen && drawer.hidden && state) populatePolicyForm();
   drawer.hidden = !shouldOpen;
   $('#approvalsButton').setAttribute('aria-expanded', String(shouldOpen));
-  if (shouldOpen) ($('#closeApprovals') || drawer).focus();
-  else if (wasOpen) $('#approvalsButton').focus();
+  // Move focus only on open/close transitions: openApprovals(true) on an
+  // already-open drawer must not steal focus from the policy form.
+  if (shouldOpen && !wasOpen) ($('#closeApprovals') || drawer).focus();
+  else if (!shouldOpen && wasOpen) $('#approvalsButton').focus();
 }
 
 $('#approvalsButton').addEventListener('click', () => openApprovals());

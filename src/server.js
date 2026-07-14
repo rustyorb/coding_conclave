@@ -304,6 +304,10 @@ export class ConclaveApp {
               }
             } else if (event.status === 'failed') {
               // Auto-retry applies to failed runs only, never to cancelled ones.
+              // A retry reuses the task's original write approval by design:
+              // approvals authorize the task, not one execution — the same
+              // semantic as manual requeue — and retries are bounded by
+              // maxAttempts and opt-in via policy.autoRetry.
               const gate = live && state.policy.autoRetry.enabled;
               if (gate && (task.attempts ?? 0) < state.policy.autoRetry.maxAttempts) {
                 task.attempts = (task.attempts ?? 0) + 1;

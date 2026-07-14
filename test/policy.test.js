@@ -7,6 +7,7 @@ function baseState(overrides = {}) {
     room: { paused: false, limits: { maxConcurrentRuns: 3 } },
     agents: [],
     approvals: [],
+    audit: [],
     policy: { ...defaultPolicy(), enabled: true },
     ...overrides
   };
@@ -104,7 +105,7 @@ test('evaluateAutoApproval enforces enablement, pause, concurrency, and rate cap
   assert.equal(evaluateAutoApproval(allowing(), approval, { running: 3 }).allow, false);
   const capped = allowing();
   capped.policy.maxAutoApprovalsPerHour = 1;
-  capped.approvals = [{ decidedBy: 'autopilot', status: 'auto-approved', decidedAt: new Date().toISOString() }];
+  capped.audit = [{ type: 'approval.auto-approved', createdAt: new Date().toISOString() }];
   assert.deepEqual(evaluateAutoApproval(capped, approval, { running: 0 }), { allow: false, code: 'rate-capped' });
   assert.equal(evaluateAutoApproval(allowing(), approval, { running: 0 }).allow, true);
 });
@@ -131,16 +132,20 @@ test('evaluateAutoApproval command match and non-match', () => {
   assert.equal(evaluateAutoApproval(state, { type: 'command', command: 'npm test && rm -rf /' }, { running: 0 }).allow, false);
 });
 
-test('autoApprovalsInWindow counts only the trailing hour', () => {
+test('autoApprovalsInWindow counts audit events in the trailing hour; reverts do not refund seats', () => {
   const nowMs = Date.now();
   const at = (minutesAgo) => new Date(nowMs - minutesAgo * 60_000).toISOString();
   const state = baseState({
-    approvals: [
-      { decidedBy: 'autopilot', status: 'auto-approved', decidedAt: at(59) },
-      { decidedBy: 'autopilot', status: 'auto-approved', decidedAt: at(61) },
-      { decidedBy: 'user', status: 'approved', decidedAt: at(5) },
-      { decidedBy: 'autopilot', status: 'pending', decidedAt: null }
-    ]
+    audit: [
+      { type: 'approval.auto-approved', createdAt: at(59) },
+      { type: 'approval.auto-approved', createdAt: at(61) },
+      { type: 'approval.approved', createdAt: at(5) },
+      { type: 'approval.auto-approved', createdAt: at(10) },
+      { type: 'autopilot.start-failed', createdAt: at(9) }
+    ],
+    // The at(10) approval was reverted to pending by a failed start — its
+    // audit event still holds the seat, so status contributes nothing here.
+    approvals: [{ decidedBy: 'autopilot', status: 'pending', decidedAt: null }]
   });
-  assert.equal(autoApprovalsInWindow(state, nowMs), 1);
+  assert.equal(autoApprovalsInWindow(state, nowMs), 2);
 });

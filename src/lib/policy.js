@@ -79,9 +79,12 @@ export function commandAllowed(policy, command) {
   return policy.commandAllowlist.find((pattern) => globMatch(pattern, command)) ?? null;
 }
 
+// The cap counts auto-approval EVENTS in the audit log, not current approval
+// status: reverting a failed start returns the approval to pending but must
+// not refund the rate-cap seat it already spent this hour.
 export function autoApprovalsInWindow(state, nowMs = Date.now()) {
-  return state.approvals.filter((entry) => entry.decidedBy === 'autopilot' && entry.status === 'auto-approved'
-    && Date.parse(entry.decidedAt) > nowMs - 3_600_000).length;
+  return state.audit.filter((entry) => entry.type === 'approval.auto-approved'
+    && Date.parse(entry.createdAt) > nowMs - 3_600_000).length;
 }
 
 export function evaluateAutoApproval(state, approval, { running }) {

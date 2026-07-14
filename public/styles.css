@@ -134,6 +134,15 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .type-chip { font-size: 8px; text-transform: uppercase; letter-spacing: .08em; color: var(--purple); border: 1px solid rgba(156,124,255,.2); padding: 2px 5px; border-radius: 4px; }
 .message-body { color: #d1ccde; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
 .message.system-message .message-body { color: #8f899f; font-size: 12px; }
+.message-body a { color: var(--purple); text-decoration: underline; text-underline-offset: 2px; }
+.message-body .md-heading { font-weight: 800; color: #eae6f7; }
+.message-body code.md-inline { font-family: "Cascadia Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; background: #201c32; border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; color: #cabbff; }
+.md-code { white-space: normal; background: #12101c; border: 1px solid var(--border); border-radius: 10px; margin: 8px 0; overflow: hidden; }
+.md-code-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 6px 4px 11px; background: #1b1827; border-bottom: 1px solid var(--border); font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: #918aab; }
+.md-code pre { margin: 0; padding: 10px 12px; overflow-x: auto; }
+.md-code code { font-family: "Cascadia Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; line-height: 1.55; color: #d6d2e4; white-space: pre; }
+.code-copy { border: 1px solid rgba(156,124,255,.25); background: rgba(156,124,255,.07); color: #cabbff; border-radius: 6px; padding: 2px 7px; cursor: pointer; font-size: 9px; font-weight: 700; }
+.code-copy:hover { background: rgba(156,124,255,.18); }
 .empty { display: grid; place-items: center; text-align: center; height: 100%; color: var(--muted); }
 .empty strong { color: var(--text); display: block; margin-bottom: 5px; }
 

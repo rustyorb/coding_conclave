@@ -11,6 +11,28 @@ Protocol: see [AGENTS.md](AGENTS.md).
 
 ## Handoffs (newest first)
 
+### claude (Fable 5) — 2026-07-14 12:30 UTC — Chat upgrade: deep budgeted prompt history + markdown feed; real-agent fleet E2E closes punch item 5
+
+**What changed**
+- `src/server.js`: new exported `transcriptLines()` — newest-first, character-budgeted room history for prompts. `promptForTask` now 20 msgs / 400-char clamp / 5K budget (was 8×240); `promptForChat` 30 / 600 / 9K (was 11×320) with non-`message` types labeled `[type]`. Comment documents the cmd.exe ~8K caveat for `.cmd`-shimmed CLIs.
+- `public/markdown.js` (new): `esc` + `renderMarkdown` for the chat feed — fenced code blocks (language label + Copy button), inline code, bold, headings, https-only links. Safety model: input NULs stripped, code escaped and stashed as `\u0000N\u0000` tokens before the other passes run on escaped text; the URL class excludes the sentinel (adversarial review found an href attribute breakout pre-fix); link text excludes `[` and both link parts are length-bounded (fleet review found a quadratic on unmatched-`[` floods, ~2.5s over 50 poisoned messages).
+- `public/app.js`: non-system messages render through `renderMarkdown`; per-message Copy and per-code-block Copy buttons (delegated handlers next to copyTitle); `esc`/`renderMarkdown` now imported from `markdown.js`.
+- `public/styles.css`: `.md-code`, `.md-code-head`, `.code-copy`, `code.md-inline`, `.md-heading`, `.message-body a`.
+- `test/markdown.test.js` (new, 7 tests: XSS attack cases, forged-token cases, quadratic guard); `test/server.test.js`: chat-history depth/budget test + task-prompt budget test.
+
+**How to verify**
+- `npm test` → 78/78 pass (run 2026-07-14, exit 0).
+- Live-verified against a scratch instance (`CONCLAVE_STATE=<temp> CONCLAVE_TOKEN=<pin> PORT=4383`) with the real agent fleet: 92-message room rendered 6 code blocks / 281 inline spans / 17 headings with zero console errors and zero live script elements from untrusted agent output.
+- IMPORTANT (operator): restart the live server, hard-refresh (Ctrl+Shift+R), and reopen the tokened startup URL.
+
+**Fleet E2E — punch item 5 closed**
+All four real CLIs (codex, claude, gemini, grok) ran chat turns + read-only review tasks in one scratch room: concurrency cap 3 respected, FIFO drain correct, streaming output verified on the Runs page, lazy full-output fetch (56 KB), exit codes rendered, cancel of a RUNNING claude chat turn worked (turn cancelled, process killed, agent restored to idle/verified), and an approved command ran the full gate (`node --version` → pending → approved → exit 0, `v22.22.2`). Deep-history proof: task prompts at 16-message room depth included seed 01 "Apollo", which the old 8-message window could not reach.
+
+**Open items (new)**
+12. Adapter argv→stdin (from claude-CLI's fleet audit): claude/grok pass prompts via argv; through `.cmd` shims cmd.exe enforces ~8,191 chars and re-introduces BatBadBut-class quote/newline hazards. Smallest fix: claude adapter drops the positional prompt for stdin (codex adapter is the template, `adapters.js`); empirically check grok stdin support; optional gemini-adapter stdin; optional fail-fast guard in ProcessManager for cmd.exe-wrapped invocations over ~8K.
+13. Gemini adapter truthfulness: its review task returned a speculative critique of files it never read — the adapter appears to run without filesystem access. Align its capability claims (PRD truthful-adapter requirement) or wire up file access.
+- Codex CLI note: its review task died exit 1 mid-run from its own tool-router error after posting real findings; Conclave rendered the failure branch correctly (task `failed`, stderr captured).
+
 ### claude (Fable 5) — 2026-07-14 04:10 UTC — Chat and Board are now separate pages; promote-to-task, chat turn cancel/retry, task archive/priority shipped
 
 **What changed**
@@ -30,7 +52,7 @@ Protocol: see [AGENTS.md](AGENTS.md).
 2. ~~Legacy-noise bulk cleanup~~ — DONE 2026-07-14 (swarm/board-ux): `POST /api/tasks/archive-legacy` + Board toolbar button, reversible, audited.
 3. ~~/api/state payload diet~~ — DONE 2026-07-14 (swarm/state-diet): executions projected without output (500-char tail + size, capped at 200 + `executionsTotal`); full output via `GET /api/executions/:id/output`; measured 3.51 MB → 170 KB (95.3%).
 4. ~~Board keyboard alternatives~~ — DONE 2026-07-14 (swarm/board-ux): focusable cards with aria-labels, per-card ⋯ action menu (Escape/arrows/focus return), `POST /api/tasks/:id/transitions` for proposed→ready.
-5. E2E pass on the Runs page with a real approved command (`node --version`) and a real agent chat turn — confirm output streaming, lazy output fetch, cancel, and exit-code rendering against real processes.
+5. ~~E2E pass on the Runs page~~ — DONE 2026-07-14 (chat-upgrade fleet E2E): streaming, lazy output fetch, cancel-while-running, exit codes, approved `node --version` → v22.22.2, and real chat turns from all four CLIs.
 6. ~~Drawer a11y~~ — DONE 2026-07-14 (swarm/board-ux): focus into drawer on open, restored to opener on close, Escape closes.
 7. ~~README~~ — DONE 2026-07-14: rewritten around the paged UI, the chat≠tasks rule, and the security boundary.
 8. ~~Autopilot/scheduler re-integration~~ — DONE 2026-07-14 (swarm/autopilot): policy engine wired onto the chat-turn server (auto-approve writes off/verified/all + hourly rate cap, command allowlist with metacharacter refusal, auto-accept reviews, auto-retry with exhaustion blocker, `POST /api/policy`, Autopilot panel in the approvals drawer), dependency scheduling in the FIFO drainer (`validateDependencies`, unmet-dep queueing with reasons, failed-dep blocking + approval expiry, Depends-on in the task dialog, deps chips on cards). Deferred suites ported to `test/autopilot.test.js` + `test/dependencies.test.js` and removed. Design note: the drainer remains the single scheduler; `scheduler.js` contributes pure helpers only ('ready' is the queued state — no 'queued' status exists).

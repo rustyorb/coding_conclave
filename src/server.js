@@ -119,6 +119,27 @@ function coordinatorPlanLines(state) {
   ];
 }
 
+// Room history for prompts: newest-first walk under a character budget; lines
+// return oldest-first for reading. Budgets keep the combined prompt (history +
+// 12K operator message + scaffolding) near ~22K worst case — under the 32,767
+// CreateProcess limit for argv-passed prompts. Caveat: .cmd-shimmed CLIs run
+// through cmd.exe, whose ~8K line limit the operator-message clamp alone can
+// already exceed (pre-existing; the codex adapter avoids argv via stdin).
+export function transcriptLines(state, { excludeId, limit, clamp, budget }) {
+  const lines = [];
+  let used = 0;
+  for (let index = state.messages.length - 1; index >= 0 && lines.length < limit; index -= 1) {
+    const entry = state.messages[index];
+    if (excludeId && entry.id === excludeId) continue;
+    const label = entry.type && entry.type !== 'message' ? ` [${entry.type}]` : '';
+    const line = `- ${entry.sourceName}${label}: ${clampText(entry.content, clamp)}`;
+    if (lines.length && used + line.length > budget) break;
+    lines.push(line);
+    used += line.length;
+  }
+  return lines.reverse();
+}
+
 export function promptForTask(task, agent, state) {
   const teammates = state.agents
     .filter((entry) => entry.id !== agent.id && entry.status === 'installed')
@@ -126,8 +147,7 @@ export function promptForTask(task, agent, state) {
       const current = entry.currentTaskId && state.tasks.find((item) => item.id === entry.currentTaskId);
       return `- ${entry.name}${roleSuffix(state, entry.id)}: ${entry.activity}${current ? ` on “${clampText(current.title, 120)}”` : ''}`;
     });
-  const recent = state.messages.slice(-8)
-    .map((message) => `- ${message.sourceName}: ${clampText(message.content, 240)}`);
+  const recent = transcriptLines(state, { limit: 20, clamp: 400, budget: 5_000 });
   return [
     `You are ${agent.name}, working alongside other coding agents in a Conclave room.`,
     ...identityLines(state, agent),
@@ -151,8 +171,7 @@ export function promptForTask(task, agent, state) {
 }
 
 export function promptForChat(message, agent, state) {
-  const recent = state.messages.filter((entry) => entry.id !== message.id).slice(-11)
-    .map((entry) => `- ${entry.sourceName}: ${clampText(entry.content, 320)}`);
+  const recent = transcriptLines(state, { excludeId: message.id, limit: 30, clamp: 600, budget: 9_000 });
   const isCoordinator = state.room.coordinatorId === agent.id;
   return [
     `You are ${agent.name}, participating in the general chat of a Conclave room.`,

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { ConclaveApp, promptForTask } from '../src/server.js';
+import { ConclaveApp, promptForChat, promptForTask, transcriptLines } from '../src/server.js';
 
 test('HTTP API persists chat and requires a decision before command execution', async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'conclave-api-'));
@@ -121,6 +121,44 @@ test('agent prompts share teammate status, room activity, and the coordination p
   const duplicated = promptForTask({ title: 'SAME', objective: 'SAME', accessMode: 'read-only' }, state.agents[0], state);
   assert.ok(!duplicated.split('\n').includes('SAME'), 'objective identical to the title is not repeated');
   assert.match(duplicated, /Task: SAME/);
+});
+
+test('chat prompts carry deep budgeted room history with type labels', () => {
+  const messages = Array.from({ length: 40 }, (_, index) => ({
+    id: `msg_${index}`, sourceName: `Agent${index}`, type: index === 20 ? 'blocker' : 'message',
+    content: `note ${index} ${'x'.repeat(120)}`
+  }));
+  const state = {
+    room: { workspace: 'C:\\workspace' },
+    agents: [{ id: 'claude', name: 'Claude', status: 'installed' }],
+    tasks: [],
+    messages
+  };
+  const prompt = promptForChat({ id: 'msg_39', content: 'latest' }, state.agents[0], state);
+  assert.match(prompt, /note 15 /, 'history reaches deeper than the old 11-message window');
+  assert.match(prompt, /- Agent20 \[blocker\]:/, 'non-chat messages are labeled with their type');
+  assert.doesNotMatch(prompt, /- Agent39/, 'the message being answered is not duplicated into history');
+
+  const flooded = { ...state, messages: messages.map((entry) => ({ ...entry, content: 'y'.repeat(5_000) })) };
+  const lines = transcriptLines(flooded, { limit: 30, clamp: 600, budget: 9_000 });
+  assert.ok(lines.length >= 1, 'at least one line survives even when every message is huge');
+  assert.ok(lines.join('\n').length <= 9_800, `history respects the budget (got ${lines.join('\n').length})`);
+});
+
+test('task prompts budget their room-activity history', () => {
+  const messages = Array.from({ length: 40 }, (_, index) => ({
+    id: `msg_${index}`, sourceName: `Agent${index}`, type: 'message', content: 'y'.repeat(5_000)
+  }));
+  const state = {
+    room: { workspace: 'C:\\workspace' },
+    agents: [{ id: 'claude', name: 'Claude', status: 'installed', activity: 'idle', currentTaskId: null }],
+    tasks: [], messages
+  };
+  const prompt = promptForTask({ title: 'T', objective: 'O', accessMode: 'read-only' }, state.agents[0], state);
+  const history = prompt.slice(prompt.indexOf('Recent room activity'), prompt.indexOf('Coordinate through the workspace'));
+  assert.ok(history.length <= 5_800, `history stays near the 5K budget (got ${history.length})`);
+  assert.match(prompt, /- Agent39/, 'the newest message is always included');
+  assert.doesNotMatch(prompt, /- Agent20:/, 'messages beyond the budget are dropped');
 });
 
 test('chat turns run read-only, resolve on completion, and never touch the task board', async (context) => {

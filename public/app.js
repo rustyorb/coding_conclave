@@ -1,4 +1,5 @@
 import { createRefreshScheduler } from './refresh-scheduler.js';
+import { esc, renderMarkdown } from './markdown.js';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -9,10 +10,6 @@ let promoteMessageId = null;
 const selectedRecipientIds = new Set();
 const boardFilters = { text: '', agentId: '', closed: false, archived: false };
 const ROUTES = ['chat', 'board', 'runs', 'workspace'];
-
-const esc = (value = '') => String(value).replace(/[&<>'"]/g, (character) => ({
-  '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
-})[character]);
 
 const relativeTime = (iso) => {
   const seconds = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
@@ -171,13 +168,14 @@ function renderFeed() {
       && !state.chatTurns.some((candidate) => candidate.retryOf === turn.id);
     const actions = [
       promotable ? `<button class="message-action" data-promote="${esc(message.id)}" title="Promote to task">→ Task</button>` : '',
-      retryable ? `<button class="message-action retry" data-retry-turn="${esc(turn.id)}">Retry reply</button>` : ''
+      retryable ? `<button class="message-action retry" data-retry-turn="${esc(turn.id)}">Retry reply</button>` : '',
+      message.source !== 'system' ? `<button class="message-action" data-copy-message="${esc(message.id)}" title="Copy message text">Copy</button>` : ''
     ].filter(Boolean).join('');
     return `<article class="message ${message.source === 'system' ? 'system-message' : ''}">
       <div class="message-avatar ${esc(sourceClass)}">${message.source === 'user' ? 'YOU' : esc(initials(message.sourceName))}</div>
       <div class="message-main">
         <div class="message-head"><strong>${esc(message.sourceName)}</strong>${chip}<span class="message-time">${relativeTime(message.createdAt)}</span>${actions ? `<span class="message-actions">${actions}</span>` : ''}</div>
-        <div class="message-body">${esc(message.content)}</div>
+        <div class="message-body">${message.source === 'system' ? esc(message.content) : renderMarkdown(message.content)}</div>
       </div>
     </article>`;
   }).join('') : '<div class="empty"><div><strong>The room is quiet.</strong>Say something — replies stay conversation. Work starts on the Board.</div></div>';
@@ -696,6 +694,15 @@ document.addEventListener('click', async (event) => {
     if (button.dataset.copyTitle) {
       const task = state.tasks.find((entry) => entry.id === button.dataset.copyTitle);
       if (task) { await navigator.clipboard.writeText(task.title); toast('Task title copied'); }
+    }
+    if (button.dataset.copyMessage) {
+      const message = state.messages.find((entry) => entry.id === button.dataset.copyMessage);
+      if (message) { await navigator.clipboard.writeText(message.content); toast('Message copied'); }
+    }
+    if (button.dataset.copyCode) {
+      const code = button.closest('.md-code')?.querySelector('code')?.textContent ?? '';
+      await navigator.clipboard.writeText(code);
+      toast('Code copied');
     }
     if (button.dataset.recipient) {
       const installed = state.agents.filter((agent) => agent.status === 'installed').map((agent) => agent.id);

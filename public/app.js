@@ -198,6 +198,11 @@ const LANES = [
 ];
 const CLOSED_STATUSES = ['failed', 'cancelled', 'rejected'];
 
+function legacyChatTasks() {
+  return state.tasks.filter((task) => task.origin === 'message'
+    && ['completed', ...CLOSED_STATUSES].includes(task.status) && !task.archivedAt);
+}
+
 function visibleTasks() {
   return state.tasks.filter((task) => {
     if (task.archivedAt && !boardFilters.archived) return false;
@@ -208,6 +213,30 @@ function visibleTasks() {
     }
     return true;
   });
+}
+
+function laneLabel(status) {
+  return (LANES.find((lane) => lane.statuses.includes(status)) || { title: 'Closed' }).title;
+}
+
+function taskMenuItems(task) {
+  const items = [];
+  if (!task.archivedAt) {
+    if (task.status === 'proposed') items.push(`<button role="menuitem" data-mark-ready="${task.id}">Mark ready</button>`);
+    if (task.status === 'review-required') {
+      items.push(`<button role="menuitem" data-review="${task.id}" data-accepted="true">Accept</button>`,
+        `<button role="menuitem" data-review="${task.id}" data-accepted="false">Reject</button>`);
+    }
+    if (task.status === 'active') items.push(`<button role="menuitem" data-cancel="${task.id}">Interrupt</button>`);
+    if (task.status === 'blocked') items.push(`<button role="menuitem" data-requeue="${task.id}">Requeue</button>`);
+    if (['completed', ...CLOSED_STATUSES].includes(task.status)) {
+      items.push(`<button role="menuitem" data-archive="${task.id}">Archive</button>`);
+    }
+  } else {
+    items.push(`<button role="menuitem" data-unarchive="${task.id}">Unarchive</button>`);
+  }
+  items.push(`<button role="menuitem" data-copy-title="${task.id}">Copy title</button>`);
+  return items.join('');
 }
 
 function taskCard(task) {
@@ -235,7 +264,9 @@ function taskCard(task) {
   } else {
     actions.push(`<button class="tiny-button" data-unarchive="${task.id}">Unarchive</button>`);
   }
-  return `<article class="task-card">
+  return `<article class="task-card" tabindex="0" aria-label="${esc(task.title)}, ${esc(laneLabel(task.status))}, ${esc(agent?.name || task.agentId)}">
+    <button class="task-menu-button" data-task-menu="${task.id}" aria-label="Task actions" aria-haspopup="true" aria-expanded="false">⋯</button>
+    <div class="task-menu" role="menu" hidden>${taskMenuItems(task)}</div>
     <div class="task-chips">${priority}${access}${origin}${archivedChip}</div>
     <h3>${esc(task.title)}</h3><p>${esc(task.objective)}</p>
     <div class="task-meta"><span>${esc(agent?.name || task.agentId)}</span><span>${esc(status)}</span></div>
@@ -258,6 +289,10 @@ function renderBoard() {
   }).join('');
   const open = state.tasks.filter((task) => !task.archivedAt && !CLOSED_STATUSES.includes(task.status) && task.status !== 'completed').length;
   $('#boardSummary').textContent = `${open} open · ${state.tasks.filter((task) => task.status === 'completed' && !task.archivedAt).length} done · ${state.tasks.filter((task) => task.archivedAt).length} archived`;
+  const legacyCount = legacyChatTasks().length;
+  const legacyButton = $('#archiveLegacyButton');
+  legacyButton.hidden = legacyCount === 0;
+  legacyButton.textContent = `Archive legacy chat ×${legacyCount}`;
   const agentSelect = $('#boardAgent');
   const previous = agentSelect.value;
   agentSelect.innerHTML = ['<option value="">All agents</option>',
@@ -384,7 +419,7 @@ $('#composer').addEventListener('submit', async (event) => {
 });
 
 $('#messageInput').addEventListener('keydown', (event) => {
-  if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); $('#composer').requestSubmit(); }
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('#composer').requestSubmit(); }
 });
 
 // ---------- task dialog (create + promote) ----------
@@ -454,24 +489,87 @@ $('#boardAgent').addEventListener('change', (event) => { boardFilters.agentId = 
 $('#boardClosed').addEventListener('change', (event) => { boardFilters.closed = event.target.checked; renderBoard(); });
 $('#boardArchived').addEventListener('change', (event) => { boardFilters.archived = event.target.checked; renderBoard(); });
 
+$('#archiveLegacyButton').addEventListener('click', async () => {
+  const count = legacyChatTasks().length;
+  if (!count) return;
+  if (!confirm(`Archive ${count} legacy chat task${count === 1 ? '' : 's'}? This is reversible via the Archived filter.`)) return;
+  try {
+    const result = await api('/api/tasks/archive-legacy', { method: 'POST', body: '{}' });
+    toast(`${result.archived} legacy chat tasks archived`);
+    await refresh();
+  } catch (error) { toast(error.message, true); }
+});
+
 // ---------- approvals drawer ----------
 
 function openApprovals(open) {
   const drawer = $('#approvalsDrawer');
   const shouldOpen = open ?? drawer.hidden;
+  const wasOpen = !drawer.hidden;
   drawer.hidden = !shouldOpen;
   $('#approvalsButton').setAttribute('aria-expanded', String(shouldOpen));
+  if (shouldOpen) ($('#closeApprovals') || drawer).focus();
+  else if (wasOpen) $('#approvalsButton').focus();
 }
 
 $('#approvalsButton').addEventListener('click', () => openApprovals());
 $('#closeApprovals').addEventListener('click', () => openApprovals(false));
 
+// ---------- task overflow menus ----------
+
+function closeTaskMenus(focusToggle = false) {
+  $$('.task-menu:not([hidden])').forEach((menu) => {
+    menu.hidden = true;
+    const toggle = menu.previousElementSibling;
+    toggle?.setAttribute('aria-expanded', 'false');
+    if (focusToggle) toggle?.focus();
+  });
+}
+
+document.addEventListener('keydown', (event) => {
+  const openMenu = document.querySelector('.task-menu:not([hidden])');
+  if (openMenu) {
+    if (event.key === 'Escape') { event.preventDefault(); closeTaskMenus(true); }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const items = [...openMenu.querySelectorAll('button')];
+      const index = items.indexOf(document.activeElement);
+      const step = event.key === 'ArrowDown' ? 1 : -1;
+      const next = index === -1 ? (step === 1 ? 0 : items.length - 1) : (index + step + items.length) % items.length;
+      items[next]?.focus();
+    }
+    return;
+  }
+  if (event.key === 'Escape' && !$('#approvalsDrawer').hidden && !document.querySelector('dialog[open]')) {
+    openApprovals(false);
+  }
+});
+
 // ---------- delegated clicks ----------
 
 document.addEventListener('click', async (event) => {
+  if (!event.target.closest('.task-menu-button')) closeTaskMenus();
   const button = event.target.closest('button');
   if (!button) return;
   try {
+    if (button.dataset.taskMenu) {
+      const menu = button.nextElementSibling;
+      const willOpen = menu.hidden;
+      closeTaskMenus();
+      if (willOpen) {
+        menu.hidden = false;
+        button.setAttribute('aria-expanded', 'true');
+        menu.querySelector('button')?.focus();
+      }
+    }
+    if (button.dataset.markReady) {
+      await api(`/api/tasks/${button.dataset.markReady}/transitions`, { method: 'POST', body: JSON.stringify({ to: 'ready' }) });
+      toast('Task marked ready'); await refresh();
+    }
+    if (button.dataset.copyTitle) {
+      const task = state.tasks.find((entry) => entry.id === button.dataset.copyTitle);
+      if (task) { await navigator.clipboard.writeText(task.title); toast('Task title copied'); }
+    }
     if (button.dataset.recipient) {
       const installed = state.agents.filter((agent) => agent.status === 'installed').map((agent) => agent.id);
       if (button.dataset.recipient === 'room') selectedRecipientIds.clear();

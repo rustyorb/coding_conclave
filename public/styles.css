@@ -171,8 +171,16 @@ select, input, dialog textarea { color: var(--text); background: #12101d; border
 .board-lanes { overflow: auto; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(230px, 1fr); align-items: stretch; gap: 12px; padding: 18px 22px; }
 .task-lane { min-width: 0; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 12px; background: rgba(255,255,255,.017); padding: 11px; overflow-y: auto; }
 .lane-head { display: flex; justify-content: space-between; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .1em; margin-bottom: 10px; }
-.task-card { padding: 12px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--border); margin-bottom: 9px; }
-.task-card h3 { margin: 0 0 6px; font-size: 12px; }
+.task-card { position: relative; padding: 12px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--border); margin-bottom: 9px; }
+.task-card:focus-visible { outline: none; border-color: rgba(156,124,255,.55); box-shadow: 0 0 0 2px rgba(156,124,255,.22); }
+.task-card h3 { margin: 0 0 6px; font-size: 12px; padding-right: 20px; }
+.task-card .task-chips { padding-right: 20px; }
+.task-menu-button { border: 0; background: none; position: absolute; top: 7px; right: 7px; color: var(--muted); cursor: pointer; border-radius: 6px; padding: 1px 6px; font-size: 13px; line-height: 1.4; }
+.task-menu-button:hover, .task-menu-button:focus-visible, .task-menu-button[aria-expanded="true"] { background: rgba(255,255,255,.08); color: var(--text); }
+.task-menu { position: absolute; top: 27px; right: 7px; z-index: 5; min-width: 128px; display: flex; flex-direction: column; gap: 2px; padding: 5px; border-radius: 9px; background: #1d1930; border: 1px solid rgba(255,255,255,.14); box-shadow: 0 14px 40px rgba(0,0,0,.45); }
+.task-menu[hidden] { display: none; }
+.task-menu button { border: 0; background: none; color: var(--text); text-align: left; padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 11px; }
+.task-menu button:hover, .task-menu button:focus { background: rgba(156,124,255,.16); outline: none; }
 .task-card p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .task-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 7px; }
 .task-chips:empty { display: none; }

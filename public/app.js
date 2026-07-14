@@ -222,20 +222,20 @@ function laneLabel(status) {
 function taskMenuItems(task) {
   const items = [];
   if (!task.archivedAt) {
-    if (task.status === 'proposed') items.push(`<button role="menuitem" data-mark-ready="${task.id}">Mark ready</button>`);
+    if (task.status === 'proposed') items.push(`<button role="menuitem" data-mark-ready="${esc(task.id)}">Mark ready</button>`);
     if (task.status === 'review-required') {
-      items.push(`<button role="menuitem" data-review="${task.id}" data-accepted="true">Accept</button>`,
-        `<button role="menuitem" data-review="${task.id}" data-accepted="false">Reject</button>`);
+      items.push(`<button role="menuitem" data-review="${esc(task.id)}" data-accepted="true">Accept</button>`,
+        `<button role="menuitem" data-review="${esc(task.id)}" data-accepted="false">Reject</button>`);
     }
-    if (task.status === 'active') items.push(`<button role="menuitem" data-cancel="${task.id}">Interrupt</button>`);
-    if (task.status === 'blocked') items.push(`<button role="menuitem" data-requeue="${task.id}">Requeue</button>`);
+    if (task.status === 'active') items.push(`<button role="menuitem" data-cancel="${esc(task.id)}">Interrupt</button>`);
+    if (task.status === 'blocked') items.push(`<button role="menuitem" data-requeue="${esc(task.id)}">Requeue</button>`);
     if (['completed', ...CLOSED_STATUSES].includes(task.status)) {
-      items.push(`<button role="menuitem" data-archive="${task.id}">Archive</button>`);
+      items.push(`<button role="menuitem" data-archive="${esc(task.id)}">Archive</button>`);
     }
   } else {
-    items.push(`<button role="menuitem" data-unarchive="${task.id}">Unarchive</button>`);
+    items.push(`<button role="menuitem" data-unarchive="${esc(task.id)}">Unarchive</button>`);
   }
-  items.push(`<button role="menuitem" data-copy-title="${task.id}">Copy title</button>`);
+  items.push(`<button role="menuitem" data-copy-title="${esc(task.id)}">Copy title</button>`);
   return items.join('');
 }
 
@@ -260,19 +260,19 @@ function taskCard(task) {
   const actions = [];
   if (!task.archivedAt) {
     if (task.status === 'review-required') {
-      actions.push(`<button class="tiny-button accept" data-review="${task.id}" data-accepted="true">Accept</button>`,
-        `<button class="tiny-button reject" data-review="${task.id}" data-accepted="false">Reject</button>`);
+      actions.push(`<button class="tiny-button accept" data-review="${esc(task.id)}" data-accepted="true">Accept</button>`,
+        `<button class="tiny-button reject" data-review="${esc(task.id)}" data-accepted="false">Reject</button>`);
     }
-    if (task.status === 'active') actions.push(`<button class="tiny-button reject" data-cancel="${task.id}">Interrupt</button>`);
-    if (task.status === 'blocked') actions.push(`<button class="tiny-button accept" data-requeue="${task.id}">Requeue</button>`);
+    if (task.status === 'active') actions.push(`<button class="tiny-button reject" data-cancel="${esc(task.id)}">Interrupt</button>`);
+    if (task.status === 'blocked') actions.push(`<button class="tiny-button accept" data-requeue="${esc(task.id)}">Requeue</button>`);
     if (['completed', ...CLOSED_STATUSES].includes(task.status)) {
-      actions.push(`<button class="tiny-button" data-archive="${task.id}">Archive</button>`);
+      actions.push(`<button class="tiny-button" data-archive="${esc(task.id)}">Archive</button>`);
     }
   } else {
-    actions.push(`<button class="tiny-button" data-unarchive="${task.id}">Unarchive</button>`);
+    actions.push(`<button class="tiny-button" data-unarchive="${esc(task.id)}">Unarchive</button>`);
   }
   return `<article class="task-card" tabindex="0" aria-label="${esc(task.title)}, ${esc(laneLabel(task.status))}, ${esc(agent?.name || task.agentId)}">
-    <button class="task-menu-button" data-task-menu="${task.id}" aria-label="Task actions" aria-haspopup="true" aria-expanded="false">⋯</button>
+    <button class="task-menu-button" data-task-menu="${esc(task.id)}" aria-label="Task actions" aria-haspopup="true" aria-expanded="false">⋯</button>
     <div class="task-menu" role="menu" hidden>${taskMenuItems(task)}</div>
     <div class="task-chips">${priority}${access}${origin}${dependencies}${archivedChip}</div>
     <h3>${esc(task.title)}</h3><p>${esc(task.objective)}</p>
@@ -339,14 +339,14 @@ function renderRuns() {
   const truncationNote = total > state.executions.length
     ? `<div class="blank-state">Showing latest ${state.executions.length} of ${total} runs</div>` : '';
   $('#runList').innerHTML = state.executions.length ? state.executions.map((execution) => `
-    <button class="run-item ${execution.id === active?.id ? 'active' : ''} status-${esc(execution.status)}" data-execution="${execution.id}">
+    <button class="run-item ${execution.id === active?.id ? 'active' : ''} status-${esc(execution.status)}" data-execution="${esc(execution.id)}">
       <strong>${esc(execution.agentId || 'command')}</strong>
       <span>${esc(execution.kind || 'agent')} · ${esc(execution.status)}</span>
       <span class="run-time">${relativeTime(execution.startedAt)}</span>
     </button>`).join('') + truncationNote : '<div class="blank-state">Real executions appear here after chat replies, tasks, or approved commands.</div>';
   if (active) {
     activeExecutionId = active.id;
-    const cancel = active.status === 'running' ? `<button class="tiny-button reject" data-cancel-execution="${active.id}">Cancel run</button>` : '';
+    const cancel = active.status === 'running' ? `<button class="tiny-button reject" data-cancel-execution="${esc(active.id)}">Cancel run</button>` : '';
     const size = active.outputSize ?? 0;
     $('#runMeta').innerHTML = `
       <div class="run-meta-row"><span class="chip">${esc(active.kind || 'agent')}</span><span class="chip status-${esc(active.status)}">${esc(active.status)}</span>${active.exitCode === null || active.exitCode === undefined ? '' : `<span class="chip">exit ${esc(active.exitCode)}</span>`}<span class="chip">${esc(formatOutputSize(size))} captured</span>${cancel}</div>
@@ -356,7 +356,9 @@ function renderRuns() {
     $('#consoleOutput').textContent = (cached ? cached.output : active.outputTail) || 'Process started; waiting for output…';
     const output = $('#consoleOutput');
     output.scrollTop = output.scrollHeight;
-    loadRunOutput(active);
+    // Fetch full output only while the Runs page is actually visible — otherwise a
+    // streaming run would make every refresh (from any page) re-download its log.
+    if (currentRoute() === 'runs') loadRunOutput(active);
   } else {
     $('#runMeta').innerHTML = '';
     $('#consoleOutput').textContent = 'No executions yet.';
@@ -388,7 +390,7 @@ function renderApprovals() {
     <article class="approval-card">
       <h3>${esc(approval.title)}</h3><p>${esc(approval.detail)}</p>
       <div class="approval-command">${esc(approval.command)}<br><span>${esc(approval.cwd)}</span></div>
-      <div class="approval-actions"><button class="tiny-button reject" data-approval="${approval.id}" data-decision="denied">Deny</button><button class="tiny-button accept" data-approval="${approval.id}" data-decision="approved">Approve</button></div>
+      <div class="approval-actions"><button class="tiny-button reject" data-approval="${esc(approval.id)}" data-decision="denied">Deny</button><button class="tiny-button accept" data-approval="${esc(approval.id)}" data-decision="approved">Approve</button></div>
     </article>`).join('') : '<div class="blank-state">No actions are waiting.<br>Nothing runs with write or command authority until you approve it.</div>';
   renderAutopilotStatus();
 }

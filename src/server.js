@@ -335,7 +335,7 @@ export class ConclaveApp {
     while (true) {
       const state = this.store.state;
       if (state.room.paused) return;
-      if (this.processes.running.size >= state.room.limits.maxConcurrentRuns) return;
+      if (this.processes.load >= state.room.limits.maxConcurrentRuns) return;
       const busyAgents = new Set(state.agents.filter((entry) => entry.activity === 'running').map((entry) => entry.id));
       const writerActive = state.tasks.some((entry) => entry.status === 'active' && entry.accessMode === 'workspace-write');
       const tasksById = new Map(state.tasks.map((entry) => [entry.id, entry]));
@@ -402,7 +402,7 @@ export class ConclaveApp {
       : activeWriter ? `“${activeWriter.title}” releases the workspace; one agent writes at a time`
       : agentBusyOn ? `${agent.name} finishes “${agentBusyOn.title}”; one run per agent at a time`
       : agentBusyChat || agent.activity === 'running' ? `${agent.name} finishes the current chat reply; one run per agent at a time`
-      : this.processes.running.size >= state.room.limits.maxConcurrentRuns ? 'a concurrent run slot frees up'
+      : this.processes.load >= state.room.limits.maxConcurrentRuns ? 'a concurrent run slot frees up'
       : null;
     if (waitReason) {
       await this.store.update((next) => {
@@ -424,11 +424,25 @@ export class ConclaveApp {
       workspace: state.room.workspace,
       accessMode: task.accessMode
     });
-    await this.store.update((next) => {
+    // Check-and-reserve atomically inside the serialized store queue: the earlier
+    // waitReason pass ran on a snapshot, so a concurrent start (a second drainer,
+    // an HTTP requeue/transition, a resume) could have won in the meantime. Only
+    // the caller whose mutator still sees a startable task and free capacity
+    // flips it to active; everyone else backs off without side effects.
+    let reserved = false;
+    const won = await this.store.update((next) => {
       const liveTask = next.tasks.find((entry) => entry.id === taskId);
+      if (!liveTask || !['ready', 'waiting'].includes(liveTask.status)) return false;
+      if (next.room.paused) return false;
+      const liveAgent = next.agents.find((entry) => entry.id === task.agentId);
+      if (!liveAgent || liveAgent.status !== 'installed' || liveAgent.activity === 'running') return false;
+      if (liveTask.accessMode === 'workspace-write' && next.tasks.some((entry) =>
+        entry.id !== taskId && entry.status === 'active' && entry.accessMode === 'workspace-write')) return false;
+      if (this.processes.load >= next.room.limits.maxConcurrentRuns) return false;
+      this.processes.reserve();
+      reserved = true;
       liveTask.status = 'active';
       liveTask.updatedAt = now();
-      const liveAgent = next.agents.find((entry) => entry.id === task.agentId);
       liveAgent.activity = 'running';
       liveAgent.currentTaskId = taskId;
       liveAgent.currentChatTurnId = null;
@@ -437,16 +451,35 @@ export class ConclaveApp {
         id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'delegation',
         content: `Assigned “${task.title}” to ${liveAgent.name} with ${task.accessMode} access.`, taskId, createdAt: now()
       });
+      return true;
+    }).catch((error) => {
+      if (reserved) { this.processes.release(); reserved = false; }
+      throw error;
     });
-    const execution = this.processes.start({
-      taskId, agentId: agent.id, invocation, cwd: state.room.workspace, purpose: task.objective
-    });
-    await this.store.update((next) => {
-      const liveTask = next.tasks.find((entry) => entry.id === taskId);
-      liveTask.executionId = execution.id;
-    });
-    this.broadcast({ type: 'state.changed', reason: 'task.started', taskId });
-    return execution;
+    if (!won) {
+      // Lost the race after passing the snapshot checks. Leave the task drainable:
+      // an approved write task must not strand in 'waiting', which the drainer skips.
+      await this.store.update((next) => {
+        const liveTask = next.tasks.find((entry) => entry.id === taskId);
+        if (liveTask?.status === 'waiting') { liveTask.status = 'ready'; liveTask.updatedAt = now(); }
+      });
+      return null;
+    }
+    try {
+      const execution = this.processes.start({
+        taskId, agentId: agent.id, invocation, cwd: state.room.workspace, purpose: task.objective
+      });
+      await this.store.update((next) => {
+        const liveTask = next.tasks.find((entry) => entry.id === taskId);
+        liveTask.executionId = execution.id;
+      });
+      this.broadcast({ type: 'state.changed', reason: 'task.started', taskId });
+      return execution;
+    } finally {
+      // The child is registered in processes.running synchronously by start(),
+      // so the reservation has served its purpose either way.
+      if (reserved) this.processes.release();
+    }
   }
 
   async startChatTurn(chatTurnId) {
@@ -456,7 +489,7 @@ export class ConclaveApp {
     const agent = state.agents.find((entry) => entry.id === turn.agentId);
     if (!agent || agent.status !== 'installed') throw new Error('Selected agent is unavailable');
     const waitReason = state.room.paused || agent.activity === 'running'
-      || this.processes.running.size >= state.room.limits.maxConcurrentRuns;
+      || this.processes.load >= state.room.limits.maxConcurrentRuns;
     if (waitReason) return null;
     const message = state.messages.find((entry) => entry.id === turn.messageId);
     if (!message) throw new Error('Chat message not found');
@@ -466,27 +499,45 @@ export class ConclaveApp {
       workspace: state.room.workspace,
       accessMode: 'read-only'
     });
-    await this.store.update((next) => {
+    // Same atomic check-and-reserve as startTask: re-validate on live state inside
+    // the serialized store queue so concurrent drains cannot double-start a turn.
+    let reserved = false;
+    const won = await this.store.update((next) => {
       const liveTurn = next.chatTurns.find((entry) => entry.id === chatTurnId);
+      if (!liveTurn || liveTurn.status !== 'queued') return false;
+      if (next.room.paused) return false;
+      const liveAgent = next.agents.find((entry) => entry.id === turn.agentId);
+      if (!liveAgent || liveAgent.status !== 'installed' || liveAgent.activity === 'running') return false;
+      if (this.processes.load >= next.room.limits.maxConcurrentRuns) return false;
+      this.processes.reserve();
+      reserved = true;
       liveTurn.status = 'active';
       liveTurn.blocker = null;
       liveTurn.updatedAt = now();
-      const liveAgent = next.agents.find((entry) => entry.id === turn.agentId);
       liveAgent.activity = 'running';
       liveAgent.currentTaskId = null;
       liveAgent.currentChatTurnId = chatTurnId;
       liveAgent.lastAction = 'Replying in general chat';
+      return true;
+    }).catch((error) => {
+      if (reserved) { this.processes.release(); reserved = false; }
+      throw error;
     });
-    const execution = this.processes.start({
-      taskId: null, agentId: agent.id, kind: 'chat', invocation,
-      cwd: state.room.workspace, purpose: message.content
-    });
-    await this.store.update((next) => {
-      const liveTurn = next.chatTurns.find((entry) => entry.id === chatTurnId);
-      liveTurn.executionId = execution.id;
-    });
-    this.broadcast({ type: 'state.changed', reason: 'chat.started', chatTurnId });
-    return execution;
+    if (!won) return null; // still queued; a later drain retries
+    try {
+      const execution = this.processes.start({
+        taskId: null, agentId: agent.id, kind: 'chat', invocation,
+        cwd: state.room.workspace, purpose: message.content
+      });
+      await this.store.update((next) => {
+        const liveTurn = next.chatTurns.find((entry) => entry.id === chatTurnId);
+        liveTurn.executionId = execution.id;
+      });
+      this.broadcast({ type: 'state.changed', reason: 'chat.started', chatTurnId });
+      return execution;
+    } finally {
+      if (reserved) this.processes.release();
+    }
   }
 
   async createChatTurn(message, agent, { retryOf = null } = {}) {
@@ -631,7 +682,16 @@ export class ConclaveApp {
       }
     });
     if (decision === 'approved') {
-      if (approval.type === 'agent-write') await this.startTask(approval.taskId);
+      if (approval.type === 'agent-write') {
+        try {
+          await this.startTask(approval.taskId);
+        } catch (error) {
+          // Do not consume the approval on a failed start: return it to pending
+          // so the request stays recoverable, then surface the failure.
+          await this.revertFailedStart(approval.taskId, approval.id, error, 'approval.start-failed');
+          throw error;
+        }
+      }
       if (approval.type === 'command') this.startCommand(approval);
     } else if (approval.taskId) {
       // A rejected task is a terminally-bad dependency: re-evaluate dependents.
@@ -757,7 +817,7 @@ export class ConclaveApp {
         if (archivedIds.length) {
           state.audit.push({
             id: id('audit'), type: 'task.legacy-archived',
-            detail: { count: archivedIds.length, taskIds: archivedIds }, createdAt: now()
+            detail: `archived ${archivedIds.length}: ${archivedIds.join(', ')}`, createdAt: now()
           });
         }
       });
@@ -777,8 +837,19 @@ export class ConclaveApp {
       if (!agent || agent.status !== 'installed') throw new Error('Assigned agent is unavailable');
       await this.store.update((state) => {
         const live = state.tasks.find((entry) => entry.id === task.id);
+        const liveAgent = state.agents.find((entry) => entry.id === live.agentId);
+        // A write task cannot enter the run queue on its own authority: it goes to
+        // waiting with a pending approval, exactly like creation and requeue.
+        const hasAuthority = live.accessMode !== 'workspace-write'
+          || state.approvals.some((entry) => entry.taskId === live.id && ['approved', 'auto-approved'].includes(entry.status));
+        if (!hasAuthority) {
+          Object.assign(live, { status: 'waiting', blocker: null, updatedAt: now() });
+          state.approvals.unshift(this.buildWriteApproval(state, live, liveAgent));
+          state.audit.push({ id: id('audit'), type: 'task.transitioned', taskId: live.id, detail: 'proposed → waiting (approval required)', createdAt: now() });
+          return;
+        }
         Object.assign(live, { status: 'ready', blocker: null, updatedAt: now() });
-        state.audit.push({ id: id('audit'), type: 'task.transitioned', taskId: task.id, detail: 'proposed → ready', createdAt: now() });
+        state.audit.push({ id: id('audit'), type: 'task.transitioned', taskId: live.id, detail: 'proposed → ready', createdAt: now() });
       });
       this.broadcast({ type: 'state.changed', reason: 'task.transitioned', taskId: task.id });
       await this.startQueuedTasks();

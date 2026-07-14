@@ -66,8 +66,8 @@ test('archive-legacy archives only terminal, unarchived message-origin tasks and
 
   const auditEntries = app.store.state.audit.filter((entry) => entry.type === 'task.legacy-archived');
   assert.equal(auditEntries.length, 1, 'one audit event covers the whole sweep');
-  assert.equal(auditEntries[0].detail.count, 2);
-  assert.deepEqual([...auditEntries[0].detail.taskIds].sort(), ['legacy_done', 'legacy_failed']);
+  assert.match(auditEntries[0].detail, /^archived 2: /);
+  assert.ok(auditEntries[0].detail.includes('legacy_done') && auditEntries[0].detail.includes('legacy_failed'));
 
   const second = await post(base, '/api/tasks/archive-legacy');
   assert.equal(second.status, 200);

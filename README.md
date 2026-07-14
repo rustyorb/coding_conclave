@@ -47,6 +47,8 @@ Sending a message — to no one, to one agent, or to Everyone — creates **chat
 
 The user approves a write-capable agent invocation before it starts. The adapter then relies on the provider CLI's own workspace permission mode (`workspace-write`, `acceptEdits`, or `auto_edit`) while Conclave records the invocation and resulting Git diff. The local API binds to loopback, rejects untrusted `Host` headers (DNS-rebinding), blocks cross-origin mutations, and requires JSON content types on request bodies. Streamed output passes a secret redactor before persistence or display. Per-tool interactive approval inside a running provider session is not yet normalized across providers, so the UI does not claim that capability. Use read-only mode for inspection and reserve write mode for trusted workspaces.
 
+**Known limitation — local process trust.** The loopback API does not yet authenticate its caller, so any process on this machine (including a running agent) could reach mutating routes such as `/api/policy` and `/api/approvals/:id` with plain HTTP. The approval and autopilot models assume agents do not do this; a per-boot session token for mutating routes is queued work (see COORDINATION.md). Until then, treat write-mode runs as trusting the agent process itself, not just its prompt.
+
 ## Overview
 
 Conclave brings independently installed AI coding tools into one shared project room. Instead of operating Claude Code, Codex, Gemini CLI, Kimi Code, Grok-based tools, Aider, OpenCode, and other agents in isolated terminals, the user can connect them to a unified environment where they can:

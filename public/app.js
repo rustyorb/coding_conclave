@@ -446,6 +446,12 @@ function renderAutopilotStatus() {
   const used = state.audit.filter((entry) => entry.type === 'approval.auto-approved'
     && Date.parse(entry.createdAt) > Date.now() - 3_600_000).length;
   $('#autopilotUsage').textContent = `${used} of ${policy.maxAutoApprovalsPerHour} auto-approvals used this hour`;
+  const unleashed = state.room.trust === 'unleashed';
+  const trustChip = $('#trustChip');
+  trustChip.textContent = unleashed ? 'unleashed' : 'gated';
+  trustChip.classList.toggle('unleashed', unleashed);
+  if ($('#trustUnleashed') !== document.activeElement) $('#trustUnleashed').checked = unleashed;
+  $('.autopilot-section')?.classList.toggle('superseded', unleashed);
 }
 
 function populatePolicyForm() {
@@ -475,6 +481,19 @@ $('#policyForm').addEventListener('submit', async (event) => {
     await refresh();
     populatePolicyForm();
   } catch (error) { toast(error.message, true); }
+});
+
+$('#trustUnleashed').addEventListener('change', async (event) => {
+  const wantsUnleashed = event.target.checked;
+  if (wantsUnleashed && !confirm('Unleash the room? Agents will be able to dispatch tasks that run automatically with full workspace-write and command access, with no per-action approval. Everything is still audited. Use this only for local, solo work.')) {
+    event.target.checked = false;
+    return;
+  }
+  try {
+    await api('/api/room/trust', { method: 'POST', body: JSON.stringify({ trust: wantsUnleashed ? 'unleashed' : 'gated' }) });
+    toast(wantsUnleashed ? 'Room unleashed' : 'Room gated');
+    await refresh();
+  } catch (error) { event.target.checked = !wantsUnleashed; toast(error.message, true); }
 });
 
 function render() {

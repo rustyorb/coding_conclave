@@ -295,8 +295,14 @@ select, input, dialog textarea { color: var(--text); background: #12101d; border
 .approval-actions { display: flex; gap: 7px; margin-top: 9px; }
 .approval-actions button { flex: 1; }
 
+.trust-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.trust-section .chip.unleashed { color: var(--amber); border-color: rgba(247,188,102,.4); background: rgba(247,188,102,.09); }
+.trust-toggle { margin: 8px 0 4px; }
+.trust-toggle input:checked { accent-color: var(--amber); }
 .autopilot-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
 .autopilot-section .chip.on { color: var(--cyan); border-color: rgba(109,216,199,.35); background: rgba(109,216,199,.07); }
+.autopilot-section.superseded { opacity: .5; }
+.autopilot-section.superseded::after { content: "Superseded while the room is unleashed"; display: block; margin-top: 8px; color: var(--amber); font-size: 10px; }
 .policy-form { display: flex; flex-direction: column; gap: 11px; margin-top: 12px; }
 .policy-form label { display: flex; flex-direction: column; gap: 6px; color: #b8b2c6; font-size: 11px; font-weight: 650; }
 .policy-form label.check { flex-direction: row; align-items: center; font-weight: 500; }

@@ -13,6 +13,7 @@ export function initialState(workspace) {
       workspace,
       mode: 'general-chat',
       paused: false,
+      trust: 'gated',
       coordinatorId: null,
       roles: {},
       createdAt,
@@ -58,6 +59,7 @@ export class JsonStore {
           ...defaults.room,
           ...persisted.room,
           mode: 'general-chat',
+          trust: persisted.room?.trust === 'unleashed' ? 'unleashed' : 'gated',
           limits: { ...defaults.room.limits, ...persisted.room?.limits }
         },
         policy: { ...defaults.policy, ...persisted.policy,

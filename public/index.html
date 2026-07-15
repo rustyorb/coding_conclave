@@ -135,6 +135,11 @@
   <aside id="approvalsDrawer" class="approvals-drawer" aria-label="Approval center" tabindex="-1" hidden>
     <div class="drawer-head"><div><span class="eyebrow">YOU RETAIN CONTROL</span><h2>Approval Center</h2></div><button type="button" class="close-button" id="closeApprovals">×</button></div>
     <div id="approvals" class="approval-list"></div>
+    <section class="trust-section" aria-label="Room trust">
+      <div class="panel-title"><span>ROOM TRUST</span><span class="chip" id="trustChip">gated</span></div>
+      <label class="check trust-toggle"><input type="checkbox" id="trustUnleashed"> Unleashed — agents dispatch &amp; run work themselves</label>
+      <p class="fine-print" id="trustHint">Gated: plans wait in the Board Inbox; writes and commands need your approval. For local solo use, Unleashed lets any agent turn a plan into tasks that run automatically with full workspace and command access. The session token still gates who can flip this, and every action is still audited.</p>
+    </section>
     <section class="autopilot-section" aria-label="Autopilot policy">
       <div class="panel-title"><span>AUTOPILOT</span><span class="chip" id="autopilotChip">off</span></div>
       <form id="policyForm" class="policy-form">

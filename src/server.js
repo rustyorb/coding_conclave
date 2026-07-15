@@ -173,17 +173,22 @@ export function promptForTask(task, agent, state) {
 
 export function promptForChat(message, agent, state) {
   const recent = transcriptLines(state, { excludeId: message.id, limit: 30, clamp: 600, budget: 9_000 });
-  const isCoordinator = state.room.coordinatorId === agent.id;
+  const unleashed = state.room.trust === 'unleashed';
+  // Unleashed rooms let any agent dispatch a plan block; gated rooms restrict
+  // proposing to the Coordinator and route everything else through the operator.
+  const mayPlan = unleashed || state.room.coordinatorId === agent.id;
   return [
     `You are ${agent.name}, participating in the general chat of a Conclave room.`,
     ...identityLines(state, agent),
     `Workspace: ${state.room.workspace}`,
     'This is one read-only conversational turn, not a coding task.',
-    'Do not modify files, claim work, or report that implementation was completed.',
-    isCoordinator
-      ? 'You may propose work through a plan block (described below); you cannot create or run tasks directly.'
-      : 'Do not create tasks. If the operator is asking for code changes, explain that they should use Assign task, New task, or ask the Coordinator to plan.',
-    ...(isCoordinator ? coordinatorPlanLines(state) : []),
+    'Do not modify files, claim work, or report that implementation was completed in THIS reply.',
+    unleashed
+      ? 'This is an UNLEASHED room: a plan block you include (format below) becomes Board tasks that run automatically — including workspace-write and commands — with no operator gate. Propose real, scoped work when the operator asks for it.'
+      : mayPlan
+        ? 'You may propose work through a plan block (described below); you cannot create or run tasks directly.'
+        : 'Do not create tasks. If the operator is asking for code changes, explain that they should use Assign task, New task, or ask the Coordinator to plan.',
+    ...(mayPlan ? coordinatorPlanLines(state) : []),
     '',
     'Recent room conversation (newest last):',
     ...(recent.length ? recent : ['- none']),
@@ -302,10 +307,12 @@ export class ConclaveApp {
           const task = state.tasks.find((entry) => entry.id === event.taskId);
           if (task) {
             // Autopilot governs tasks and commands only — never chat turns.
-            const live = state.policy?.enabled && !state.room.paused;
+            // An unleashed room is always live and always auto-accepts.
+            const unleashed = state.room.trust === 'unleashed';
+            const live = (state.policy?.enabled || unleashed) && !state.room.paused;
             if (event.status === 'completed') {
               const autoResolve = task.origin === 'message' && task.accessMode === 'read-only';
-              const autoAccept = !autoResolve && live && state.policy.autoAcceptReviews;
+              const autoAccept = !autoResolve && live && (unleashed || state.policy.autoAcceptReviews);
               task.status = autoResolve || autoAccept ? 'completed' : 'review-required';
               if (autoAccept) {
                 state.audit.push({
@@ -530,7 +537,8 @@ export class ConclaveApp {
       executable: agent.executable,
       prompt: promptForTask(task, agent, state),
       workspace: state.room.workspace,
-      accessMode: task.accessMode
+      accessMode: task.accessMode,
+      elevated: state.room.trust === 'unleashed'
     });
     // Check-and-reserve atomically inside the serialized store queue: the earlier
     // waitReason pass ran on a snapshot, so a concurrent start (a second drainer,
@@ -663,12 +671,15 @@ export class ConclaveApp {
     return turn;
   }
 
-  // Turns a completed Coordinator chat turn's ```conclave-plan``` block into
-  // proposed Board Inbox tasks. Advisory only: proposals never run, never create
-  // approvals, and only the operator can Mark ready or Dismiss them. Runs inside
-  // store.update. Plan blocks from non-coordinator agents are inert text.
+  // Turns a completed chat turn's ```conclave-plan``` block into Board tasks.
+  // Gated rooms: only the Coordinator may propose, tasks land 'proposed' and
+  // wait for the operator to Mark ready — advisory, no approvals, nothing runs.
+  // Unleashed rooms: ANY agent may propose, tasks land 'ready' (write tasks get
+  // an auto-approved write approval) and the drainer runs them. Runs inside
+  // store.update. Non-coordinator plan blocks in gated rooms are inert text.
   applyCoordinatorPlan(state, chatTurn) {
-    if (!state.room.coordinatorId || chatTurn.agentId !== state.room.coordinatorId) return;
+    const unleashed = state.room.trust === 'unleashed';
+    if (!unleashed && (!state.room.coordinatorId || chatTurn.agentId !== state.room.coordinatorId)) return;
     const message = state.messages.find((entry) =>
       entry.chatTurnId === chatTurn.id && entry.source === chatTurn.agentId && entry.content.includes('```conclave-plan'));
     if (!message) return;
@@ -709,7 +720,7 @@ export class ConclaveApp {
           priority: ['critical', 'high', 'medium', 'low', 'none'].includes(entry.priority) ? entry.priority : 'none',
           origin: 'coordinator', proposedBy: chatTurn.agentId,
           source: { messageId: message.id, sourceName: message.sourceName, content: clampText(message.content, 2_000), createdAt: message.createdAt },
-          archivedAt: null, status: 'proposed', dependencies: [], attempts: 0,
+          archivedAt: null, status: unleashed ? 'ready' : 'proposed', dependencies: [], attempts: 0,
           blocker: null, executionId: null, createdAt, updatedAt: createdAt
         }
       });
@@ -730,16 +741,34 @@ export class ConclaveApp {
       entry.task.dependencies = kept;
     }
     state.tasks.unshift(...accepted.map((entry) => entry.task).reverse());
-    message.content = message.content.replace(PLAN_BLOCK,
-      `[Proposed ${accepted.length} task${accepted.length === 1 ? '' : 's'} — review them in the Board Inbox]`);
+    // Unleashed: give write tasks an auto-approved approval up front so the
+    // drainer (called after this handler) can run them without a gate.
+    if (unleashed) {
+      for (const { task } of accepted) {
+        if (task.accessMode !== 'workspace-write') continue;
+        const agent = state.agents.find((entry) => entry.id === task.agentId);
+        const approval = this.buildWriteApproval(state, task, agent);
+        state.approvals.unshift(approval);
+        this.recordAutoApproval(state, approval, {
+          reason: 'unleashed room auto-approves plan write access', taskId: task.id, agentId: agent.id,
+          subject: `workspace-write for ${agent.name} on “${task.title}”`
+        });
+      }
+    }
+    const proposer = coordinator?.name ?? chatTurn.agentId;
+    message.content = message.content.replace(PLAN_BLOCK, unleashed
+      ? `[Dispatched ${accepted.length} task${accepted.length === 1 ? '' : 's'} to the Board]`
+      : `[Proposed ${accepted.length} task${accepted.length === 1 ? '' : 's'} — review them in the Board Inbox]`);
     state.audit.push({
-      id: id('audit'), type: 'plan.proposed', chatTurnId: chatTurn.id, agentId: chatTurn.agentId,
-      detail: clampText(`proposed ${accepted.length}${skipped.length ? `; skipped: ${skipped.join('; ')}` : ''}; raw plan: ${block[0]}`, 8_000),
+      id: id('audit'), type: unleashed ? 'plan.dispatched' : 'plan.proposed', chatTurnId: chatTurn.id, agentId: chatTurn.agentId,
+      detail: clampText(`${unleashed ? 'dispatched' : 'proposed'} ${accepted.length}${skipped.length ? `; skipped: ${skipped.join('; ')}` : ''}; raw plan: ${block[0]}`, 8_000),
       createdAt: now()
     });
     state.messages.push({
       id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'system',
-      content: clampText(`${coordinator?.name ?? chatTurn.agentId} proposed ${accepted.length} task${accepted.length === 1 ? '' : 's'} — they are waiting in the Board Inbox for your review.${skipped.length ? ` Skipped: ${skipped.join('; ')}.` : ''}`, 2_000),
+      content: clampText(unleashed
+        ? `${proposer} dispatched ${accepted.length} task${accepted.length === 1 ? '' : 's'} to the Board — they run automatically (unleashed room).${skipped.length ? ` Skipped: ${skipped.join('; ')}.` : ''}`
+        : `${proposer} proposed ${accepted.length} task${accepted.length === 1 ? '' : 's'} — they are waiting in the Board Inbox for your review.${skipped.length ? ` Skipped: ${skipped.join('; ')}.` : ''}`, 2_000),
       chatTurnId: chatTurn.id, createdAt: now()
     });
   }
@@ -1229,6 +1258,24 @@ export class ConclaveApp {
       // The verdict changes dependents: completed deps free them, rejected deps block them.
       await this.startQueuedTasks();
       return json(response, 200, { ok: true });
+    }
+    if (request.method === 'POST' && url.pathname === '/api/room/trust') {
+      const input = await readJsonBody(request);
+      if (!['gated', 'unleashed'].includes(input.trust)) throw new Error('trust must be "gated" or "unleashed"');
+      await this.store.update((state) => {
+        state.room.trust = input.trust;
+        state.audit.push({ id: id('audit'), type: 'room.trust-changed', detail: input.trust, decidedBy: 'user', createdAt: now() });
+        state.messages.push({
+          id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'system',
+          content: input.trust === 'unleashed'
+            ? 'Room set to UNLEASHED — agent plans dispatch and run automatically with full workspace and command access. Approvals are bypassed; the audit log still records everything.'
+            : 'Room set to GATED — plans wait in the Board Inbox and writes/commands need approval.',
+          createdAt: now()
+        });
+      });
+      this.broadcast({ type: 'state.changed', reason: 'room.trust-changed' });
+      if (input.trust === 'unleashed') await this.startQueuedTasks();
+      return json(response, 200, { trust: input.trust });
     }
     if (request.method === 'POST' && url.pathname === '/api/policy') {
       const policy = validatePolicy(await readJsonBody(request));

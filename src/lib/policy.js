@@ -89,9 +89,19 @@ export function autoApprovalsInWindow(state, nowMs = Date.now()) {
 
 export function evaluateAutoApproval(state, approval, { running }) {
   const policy = state.policy;
-  if (!policy?.enabled) return { allow: false };
+  const unleashed = state.room.trust === 'unleashed';
+  if (!policy?.enabled && !unleashed) return { allow: false };
   if (state.room.paused) return { allow: false };
   if (running >= state.room.limits.maxConcurrentRuns) return { allow: false };
+  // Unleashed rooms are fully trusted by the operator: approve any write or
+  // command (still one-writer-at-a-time, still paused-aware, still audited),
+  // with no rate cap and no allowlist. The session token still gates who can
+  // flip this on. Shell-metacharacter refusal is dropped here by design.
+  if (unleashed) {
+    if (approval.type === 'agent-write') return { allow: true, reason: 'unleashed room auto-approves write access' };
+    if (approval.type === 'command') return { allow: true, reason: 'unleashed room auto-approves commands' };
+    return { allow: false };
+  }
   if (autoApprovalsInWindow(state) >= policy.maxAutoApprovalsPerHour) return { allow: false, code: 'rate-capped' };
   if (approval.type === 'agent-write') {
     if (policy.autoApproveWrites === 'all-agents') return { allow: true, reason: 'policy auto-approves write access for all agents' };

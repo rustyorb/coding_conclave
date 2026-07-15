@@ -42,8 +42,10 @@ export const AGENT_DEFINITIONS = [
     command: 'codex',
     versionArgs: ['--version'],
     capabilities: ['repository inspection', 'code generation', 'file editing', 'command execution', 'testing', 'code review'],
-    build({ executable, prompt, workspace, accessMode }) {
-      const args = ['exec', '--json', '--color', 'never', '--sandbox', accessMode, '--cd', workspace, '--skip-git-repo-check', '-'];
+    build({ executable, prompt, workspace, accessMode, elevated }) {
+      const sandbox = accessMode === 'read-only' ? 'read-only'
+        : elevated ? 'danger-full-access' : 'workspace-write';
+      const args = ['exec', '--json', '--color', 'never', '--sandbox', sandbox, '--cd', workspace, '--skip-git-repo-check', '-'];
       return { ...invocation(executable, args), stdin: prompt, format: 'jsonl' };
     }
   },
@@ -54,8 +56,10 @@ export const AGENT_DEFINITIONS = [
     command: 'claude',
     versionArgs: ['--version'],
     capabilities: ['repository inspection', 'code generation', 'file editing', 'command execution', 'testing', 'code review', 'long-context analysis'],
-    build({ executable, prompt, accessMode }) {
-      const permissionMode = accessMode === 'read-only' ? 'plan' : 'acceptEdits';
+    build({ executable, prompt, accessMode, elevated }) {
+      // Unleashed rooms use bypassPermissions so a headless write run can run
+      // commands without a prompt no one is there to answer.
+      const permissionMode = accessMode === 'read-only' ? 'plan' : elevated ? 'bypassPermissions' : 'acceptEdits';
       const args = ['--print', '--verbose', '--output-format', 'stream-json', '--permission-mode', permissionMode, prompt];
       return { ...invocation(executable, args), format: 'jsonl' };
     }
@@ -67,11 +71,12 @@ export const AGENT_DEFINITIONS = [
     command: 'agy',
     versionArgs: ['--version'],
     capabilities: ['repository inspection', 'code generation', 'file editing', 'command execution', 'web research', 'testing'],
-    build({ executable, prompt, accessMode }) {
+    build({ executable, prompt, accessMode, elevated }) {
       // Antigravity CLI (agy): a real agentic CLI, replacing the API-only
       // gemini-adapter.js wrapper that could talk but never touch files.
       const mode = accessMode === 'read-only' ? 'plan' : 'accept-edits';
       const args = ['-p', prompt, '--mode', mode, '--print-timeout', '10m'];
+      if (elevated && accessMode !== 'read-only') args.push('--dangerously-skip-permissions');
       return { ...invocation(executable, args), format: 'text' };
     }
   },
@@ -82,8 +87,10 @@ export const AGENT_DEFINITIONS = [
     command: 'grok',
     versionArgs: ['--version'],
     capabilities: ['repository inspection', 'code generation', 'file editing', 'command execution', 'testing', 'code review', 'web research'],
-    build({ executable, prompt, accessMode }) {
-      const permissionMode = accessMode === 'read-only' ? 'plan' : 'acceptEdits';
+    build({ executable, prompt, accessMode, elevated }) {
+      // Grok mirrors Claude's permission-mode surface; team to verify the
+      // bypassPermissions flag name against the installed grok CLI.
+      const permissionMode = accessMode === 'read-only' ? 'plan' : elevated ? 'bypassPermissions' : 'acceptEdits';
       const args = ['-p', prompt, '--output-format', 'streaming-json', '--permission-mode', permissionMode];
       return { ...invocation(executable, args), format: 'jsonl' };
     }
@@ -131,25 +138,27 @@ export function buildAgentInvocation(agentId, options, definitions = AGENT_DEFIN
   return definition.build(options);
 }
 
-let grokTextAccumulator = '';
-let geminiTextAccumulator = '';
+const textAccumulators = { gemini: '', grok: '' };
 
-// Whole-run plain-text summary for agents without a structured stream (agy).
-// Called by the server when an execution finishes; returns null for others.
+// End-of-execution flush for agents that buffer text across events (gemini
+// accumulates its whole plain-text run; grok buffers until an `end` event).
+// Returning any leftover text here both surfaces partial output from runs
+// that died or were cancelled mid-stream and prevents that text from leaking
+// into the agent's next execution. Returns null for other agents.
 export function flushAgentSummary(agentId) {
-  if (agentId !== 'gemini') return null;
-  const text = geminiTextAccumulator.trim();
-  geminiTextAccumulator = '';
+  if (!(agentId in textAccumulators)) return null;
+  const text = textAccumulators[agentId].trim();
+  textAccumulators[agentId] = '';
   return text || null;
 }
 
 export function summarizeAgentEvent(agentId, line) {
-  // agy --print emits plain text, not JSONL: accumulate whole-run output and
-  // flush it as one message at execution end (flushAgentSummary), so multi-line
+  // agy --print emits plain text, not JSONL: accumulate the whole run and flush
+  // it as one message at execution end (flushAgentSummary), so multi-line
   // replies stay one message and fenced blocks survive intact. Safe because the
   // server runs at most one execution per agent at a time.
   if (agentId === 'gemini') {
-    geminiTextAccumulator += `${line}\n`;
+    textAccumulators.gemini += `${line}\n`;
     return null;
   }
   try {
@@ -164,17 +173,13 @@ export function summarizeAgentEvent(agentId, line) {
       }
       if (event.type === 'result') return event.result || null;
     }
-    if (agentId === 'gemini') {
-      if (event.type === 'message' && event.role === 'assistant') return event.content || null;
-      if (event.type === 'result') return event.result || null;
-    }
     if (agentId === 'grok') {
       if (event.type === 'text' && event.data) {
-        grokTextAccumulator += event.data;
+        textAccumulators.grok += event.data;
       }
       if (event.type === 'end') {
-        const result = grokTextAccumulator;
-        grokTextAccumulator = '';
+        const result = textAccumulators.grok;
+        textAccumulators.grok = '';
         return result || null;
       }
     }

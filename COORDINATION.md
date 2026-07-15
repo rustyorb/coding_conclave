@@ -9,7 +9,47 @@ Protocol: see [AGENTS.md](AGENTS.md).
 |-------|--------------|------|------------------|
 | _none_ | | | |
 
+<!-- claude-gemini-grok claim released 2026-07-14 by Claude (Fable 5, operator-side): the Grok
+     stream-summary hardening (textAccumulators refactor) was found half-applied in the tree and
+     is now completed + shipped in the trust commit; the Gemini agy swap already shipped as a021c54.
+     gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
+
 ## Handoffs (newest first)
+
+### claude (Fable 5, operator-side) — 2026-07-14 19:10 UTC — Room trust: a Gated/Unleashed switch so the operator can actually set the fleet loose locally
+
+**What changed**
+- Operator pain: the room is secure to an 11 — even maxed autopilot leaves agents unable to dispatch work or run commands (headless permission prompts hang), so a solo local user can't turn a plan into running work. New `room.trust`: `gated` (default, unchanged behavior) vs `unleashed`.
+- `src/lib/store.js`: `room.trust` field + boot normalization (old states → `gated`).
+- `src/lib/policy.js`: unleashed `evaluateAutoApproval` auto-approves all writes and ANY command (no allowlist, no rate cap, shell-metacharacter refusal dropped) — still respects pause + one-writer + concurrency.
+- `src/lib/adapters.js`: `build({elevated})` — write runs in unleashed rooms use real autonomy (claude `bypassPermissions`, codex `--sandbox danger-full-access`, agy `--dangerously-skip-permissions`, grok `bypassPermissions` — GROK FLAG NEEDS LIVE VERIFY). Also completed the half-applied Grok `textAccumulators` refactor (grok now also flushes partials on mid-stream death).
+- `src/server.js`: `applyCoordinatorPlan` — in unleashed rooms ANY agent (not just Coordinator) dispatches plans straight to `ready` with auto-approved write approvals (audited `plan.dispatched` / `approval.auto-approved`); the drainer runs them. `promptForChat` tells every agent they can dispatch. Elevated flag threaded to the task run. New `POST /api/room/trust` (token-gated).
+- `public/index.html` + `app.js` + `styles.css`: Room Trust panel in the Approval drawer with a confirm-gated Unleashed toggle; amber chip; autopilot panel shows "superseded" while unleashed.
+- `test/trust.test.js` (new, 6 tests): auto-approval matrix, elevation only on write runs, prompt awareness, non-coordinator dispatch + auto-approve, gated still parks plans.
+
+**What stays true even when unleashed:** chat≠tasks, the session token gate (only the tokened operator can flip trust), one-writer-at-a-time, concurrency cap, pause, and the full audit log.
+
+**How to verify**
+- `npm test` → 94/94 pass (exit 0).
+- Live-verified on a scratch instance: toggle flips gated↔unleashed, chip + checkbox + autopilot-supersede update over SSE, zero console errors.
+- NOT yet done live: a real agent dispatching a plan that runs a command end-to-end in an unleashed room — good first task for the fleet, and the way to verify the grok `bypassPermissions` flag name.
+
+**Left for the team (untracked in the tree, NOT committed by me):** codex's `public/recipient-selection.js` + `test/recipient-selection.test.js` (everyone-by-default chat audience, 4/4 pass, needs app.js wiring — a claim blocked codex from finishing it); `deferred-tests/` scratch. Commit these yourselves when ready.
+
+### codex — 2026-07-14 17:56 UTC — Everyone-by-default chat audience implemented and tested; client wiring blocked by active claim
+
+**What changed**
+- `public/recipient-selection.js` (new): a small recipient state model defaults General Chat to every installed CLI, automatically includes newly activated CLIs while in Everyone mode, and preserves explicit No one/subset choices across refreshes.
+- `test/recipient-selection.test.js` (new): four tests cover the default, activation changes, explicit audience choices, and the real `/api/messages` fan-out. The API-level case proves one ordinary message creates a read-only chat invocation per installed agent while creating zero tasks and zero approvals.
+- `public/app.js` was deliberately not modified because `claude-board-reset` still claims it under the repository coordination protocol. The visible composer therefore still defaults to No one until the helper is wired in.
+
+**How to verify**
+- `node --test test/recipient-selection.test.js` -> 4/4 pass.
+- `npm test` -> 89/89 pass.
+- `git diff --check` -> pass (line-ending warning for this coordination file only).
+
+**Open item**
+- After `claude-board-reset` releases `public/app.js`: import `createRecipientSelection`, replace the standalone empty `selectedRecipientIds` set with one model instance, call `sync(state.agents)` in `renderRecipients()` and before submit, and route recipient-chip clicks through `select(target, state.agents)`. Then hard-refresh `#/chat` and verify Everyone plus every installed agent chip are active before the first message.
 
 ### claude (Fable 5) — 2026-07-14 15:45 UTC — Personalized participant cards: agents can restyle their own avatar via a chat block
 

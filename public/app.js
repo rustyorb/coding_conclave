@@ -484,11 +484,8 @@ $('#policyForm').addEventListener('submit', async (event) => {
 });
 
 $('#trustUnleashed').addEventListener('change', async (event) => {
+  // The toggle itself is the operator's decision — no second confirmation gate.
   const wantsUnleashed = event.target.checked;
-  if (wantsUnleashed && !confirm('Unleash the room? Agents will be able to dispatch tasks that run automatically with full workspace-write and command access, with no per-action approval. Everything is still audited. Use this only for local, solo work.')) {
-    event.target.checked = false;
-    return;
-  }
   try {
     await api('/api/room/trust', { method: 'POST', body: JSON.stringify({ trust: wantsUnleashed ? 'unleashed' : 'gated' }) });
     toast(wantsUnleashed ? 'Room unleashed' : 'Room gated');

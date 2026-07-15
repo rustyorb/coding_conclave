@@ -16,6 +16,64 @@ Protocol: see [AGENTS.md](AGENTS.md).
 
 ## Handoffs (newest first)
 
+### grok — 2026-07-15 — Capability verification / broker design doc drafted
+
+**What changed**
+- New `docs/capability-broker-design.md`: phased design turning Codex’s CLI inventory into an implementation contract.
+- Covers: static badges → declared/probed/verified/unsupported; real capability probes; MCP names-only inventory; spawn-time tool profiles vs in-run CLI sandbox; control-plane broker vs delegated sandbox; post-fix event/payload constraints (`execution.*` + `previewCommand` + lean projection).
+- **Per-adapter conformance probe lists** in §8 (shared + codex + claude + grok + agy).
+- **Exact adapter touchpoints** in §9 (`adapters.js`, `process-manager.js`, `server.js`, `policy.js`, proposed `tool-profile.js` / `mcp-inventory.js`, UI, tests).
+- Live re-probe evidence on this host: Codex/Claude/Grok have `mcp` subcommands; agy 1.1.2 has **no** MCP command (gap called out); tool allow/deny strongest on Claude/Grok; Codex sandbox modes; Grok empty MCP list; secrets not persisted in the doc.
+
+**How to verify**
+- `git show HEAD:docs/capability-broker-design.md` (or open the file) — sections 2, 6, 8, 9, 10 present.
+- `git log -1 --oneline -- docs/capability-broker-design.md` after commit.
+- No runtime/product flip; `npm test` not required for design-only (not run).
+
+**Open items**
+- Implement Phase 1+ as separate tasks; do not start until cancel-bleed + command-preview are on the branch implementers use.
+- Live-verify Grok `bypassPermissions` under unleashed (flag name still noted open from trust handoff).
+- Operator choice: probe cadence and write-probe canary location (§14).
+
+### claude — 2026-07-15 — Execution `command` fields are now previews, not full prompt argv
+
+**What changed**
+- `src/lib/utils.js`: new `previewCommand(value, max = 200)` — first 200 chars + `… [N chars total]` length marker.
+- `src/lib/process-manager.js`: execution records persist `previewCommand(redactSecrets(argv))` instead of the full joined argv (which carried the entire task prompt, up to ~44K chars per record). Redaction runs before truncation so a secret can't be split past the redact patterns.
+- `src/server.js` `projectStateForApi`: also previews `command` in the projection, so the ~145 legacy records already holding full argv slim down in `/api/state` without mutating the persisted store.
+- `test/process-manager.test.js`: new test spawns a real child with a 7,000-char argv prompt and asserts the record holds only the preview (binary still identifiable).
+- `test/state-projection.test.js`: new test proves a legacy long-command record projects as a preview while the internal store keeps the full string.
+
+**Measured evidence (scratch instance on a copy of the live state, port 4394, since the live server still runs old code)**
+- Live `/api/state` baseline: 3,092,337 bytes; execution `command` strings held 1,279,095 chars (1.25 MB+).
+- Patched scratch `/api/state`: 1,983,708 bytes — a 1.1 MB / ~36% cut. `executions` key: 1,488 KB → 248 KB; command chars 1.28 M → 42 K (max single command 221 chars). Sample legacy preview still identifies the run: `C:\...\grok.exe -p You are Grok, working alongside…… [7342 chars total]`.
+- NOTE: the plan's "well under 1 MB" target is NOT reachable from execution records alone — the remaining ~1.9 MB is messages (608 KB), audit (479 KB), approvals (313 KB), tasks (185 KB). Those are separate slices.
+
+**How to verify**
+- `npm test` → 98/98 pass (96 existing + 2 new).
+- `node --check` on all three touched source files → pass.
+- `git diff --check` → only the repo's usual LF/CRLF warnings.
+- Operator: restart the live server to pick this up; new runs then persist previews and legacy records project as previews.
+
+**Open items**
+- `buildWriteApproval` (`src/server.js`) still stores the full prompt-bearing argv in **approval** `command` fields — 181,829 chars (~313 KB of approvals) in the live state. Same one-line `previewCommand` fix, but it's approval records, outside this task's scope. Good next slice, together with windowing messages/audit if the <1 MB target still stands.
+- The Board also carries a duplicate task "Truncate execution commands in state projection" — this handoff covers it (projection + creation both done); it should be closed as duplicate rather than re-implemented.
+
+### codex — 2026-07-15 20:32 UTC — Cancelled Grok stream text no longer bleeds into the next reply
+
+**What changed**
+- `src/lib/adapters.js`: every new Grok invocation clears the shared Grok text accumulator before streaming begins, so abandoned or late partial output from a run that never emitted `end` cannot prefix the next run.
+- `test/adapters.test.js`: added a reproduction that buffers `CANCELLED_PART|`, simulates cancellation by omitting `end`, starts a new invocation, and proves the completed reply is exactly `NEXT_REPLY` with no cancelled-run text.
+
+**How to verify**
+- `node --test test/adapters.test.js` → 7/7 pass.
+- `npm test` → 96/96 pass.
+- `node --check src/lib/adapters.js` and `node --check test/adapters.test.js` → both pass.
+- `git diff --check -- src/lib/adapters.js test/adapters.test.js COORDINATION.md` → pass; only existing LF→CRLF warnings were printed.
+
+**Open item**
+- No live Grok child-process cancellation was run; the regression covers the exact adapter event sequence that previously produced `CANCELLED_PART|NEXT_REPLY`.
+
 ### claude (Fable 5, operator-side) — 2026-07-14 19:10 UTC — Room trust: a Gated/Unleashed switch so the operator can actually set the fleet loose locally
 
 **What changed**

@@ -205,11 +205,14 @@ export function promptForChat(message, agent, state) {
 }
 
 export class ConclaveApp {
-  constructor({ workspace = projectDir, storeFile = dataFile, sessionToken } = {}) {
+  constructor({ workspace = projectDir, storeFile = dataFile, sessionToken, openAccess = false } = {}) {
     // Per-boot session secret for mutating routes (PRD 23.4): agents launched as
     // child processes never learn it, so a local process cannot decide approvals,
     // author policy, or assign roles. CONCLAVE_TOKEN pins it across restarts.
+    // openAccess (CONCLAVE_OPEN_ACCESS) drops the token check entirely for
+    // trusted single-operator LANs — the Host/Origin CSRF guards still apply.
     this.sessionToken = sessionToken || crypto.randomBytes(24).toString('base64url');
+    this.openAccess = openAccess;
     this.clients = new Set();
     this.store = new JsonStore(storeFile, path.resolve(workspace));
     this.processes = new ProcessManager({ onEvent: (event) => this.onProcessEvent(event) });
@@ -1390,6 +1393,7 @@ export class ConclaveApp {
   }
 
   hasSessionAuthority(request) {
+    if (this.openAccess) return true;
     const presented = request.headers['x-conclave-token'] ?? readCookie(request, 'conclave_token');
     return presented !== null && timingSafeStringEqual(presented, this.sessionToken);
   }
@@ -1435,16 +1439,26 @@ export class ConclaveApp {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const openAccess = ['1', 'true', 'yes'].includes(String(process.env.CONCLAVE_OPEN_ACCESS ?? '').toLowerCase());
   const app = new ConclaveApp({
     workspace: process.env.CONCLAVE_WORKSPACE || process.cwd(),
+    openAccess,
     ...(process.env.CONCLAVE_STATE ? { storeFile: path.resolve(process.env.CONCLAVE_STATE) } : {}),
     ...(process.env.CONCLAVE_TOKEN ? { sessionToken: process.env.CONCLAVE_TOKEN } : {})
   });
   await app.initialize();
   const address = await app.listen({ port: Number(process.env.PORT || 4317), host: process.env.HOST || '127.0.0.1' });
-  console.log(`Conclave is running — open this exact URL to unlock actions in your browser:`);
-  console.log(`  http://${address.address}:${address.port}/?token=${app.sessionToken}`);
-  console.log('(Reading is open on loopback; sending, approving, and settings need this session token.');
-  console.log(' Set CONCLAVE_TOKEN to keep the same token across restarts.)');
+  if (openAccess) {
+    console.log('Conclave is running — OPEN ACCESS mode (no session token required):');
+    console.log(`  http://${address.address}:${address.port}/`);
+    console.log('(CONCLAVE_OPEN_ACCESS is set: any loopback request may send, approve, and change');
+    console.log(' settings. Host/Origin CSRF guards still apply. Intended for a single trusted');
+    console.log(' operator on a private machine — unset CONCLAVE_OPEN_ACCESS to require the token.)');
+  } else {
+    console.log('Conclave is running — open this exact URL to unlock actions in your browser:');
+    console.log(`  http://${address.address}:${address.port}/?token=${app.sessionToken}`);
+    console.log('(Reading is open on loopback; sending, approving, and settings need this session token.');
+    console.log(' Set CONCLAVE_TOKEN to pin the token across restarts, or CONCLAVE_OPEN_ACCESS=1 to drop it.)');
+  }
   console.log(`Workspace: ${app.store.state.room.workspace}`);
 }

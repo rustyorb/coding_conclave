@@ -56,3 +56,24 @@ test('FR item 10: mutating routes require the session token; reads and the token
   assert.equal(viaCookie.status, 201);
   assert.equal(app.store.state.messages.filter((entry) => entry.source === 'user').length, 2);
 });
+
+test('open-access mode drops the token check but keeps the Origin/CSRF guard', async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'conclave-open-'));
+  const app = new ConclaveApp({ openAccess: true, workspace: directory, storeFile: path.join(directory, '.state', 'state.json') });
+  await app.initialize();
+  const address = await app.listen({ port: 0 });
+  const base = `http://127.0.0.1:${address.port}`;
+  context.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
+
+  // No token anywhere, yet the mutation is accepted.
+  const untokened = await fetch(`${base}/api/messages`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content: 'open access' })
+  });
+  assert.equal(untokened.status, 201);
+
+  // A cross-origin write is still refused — open access is not open season.
+  const crossOrigin = await fetch(`${base}/api/messages`, {
+    method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://evil.example' }, body: JSON.stringify({ content: 'nope' })
+  });
+  assert.equal(crossOrigin.status, 403);
+});

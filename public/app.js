@@ -2,6 +2,7 @@ import { createRefreshScheduler } from './refresh-scheduler.js';
 import { esc, renderMarkdown } from './markdown.js';
 import { chatFeedMessages } from './chat-feed.js';
 import { agentIdentity, avatarMarkup, taglineMarkup } from './avatar-cards.js';
+import { createRecipientSelection } from './recipient-selection.js';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -9,7 +10,9 @@ let state = null;
 let activeExecutionId = null;
 const outputCache = new Map(); // execution id -> { output, status }
 let promoteMessageId = null;
-const selectedRecipientIds = new Set();
+// Chat audience defaults to Everyone and reconciles on each state refresh, so a
+// fresh room or a restart comes up ready to talk to the whole fleet.
+const recipients = createRecipientSelection();
 const boardFilters = { text: '', agentId: '', closed: false, archived: false };
 const ROUTES = ['chat', 'board', 'runs', 'workspace'];
 
@@ -140,21 +143,18 @@ function renderAgents() {
 
 function renderRecipients() {
   const installed = state.agents.filter((agent) => agent.status === 'installed');
-  const availableIds = new Set(installed.map((agent) => agent.id));
-  for (const id of selectedRecipientIds) {
-    if (!availableIds.has(id)) selectedRecipientIds.delete(id);
-  }
-  const everyoneActive = installed.length > 0 && installed.every((agent) => selectedRecipientIds.has(agent.id));
+  const { selectedIds, everyoneActive } = recipients.sync(state.agents);
+  const selectedSet = new Set(selectedIds);
   $('#recipientList').innerHTML = [
-    `<button type="button" class="recipient-chip ${selectedRecipientIds.size ? '' : 'active'}" data-recipient="room" aria-pressed="${selectedRecipientIds.size === 0}">No one</button>`,
+    `<button type="button" class="recipient-chip ${selectedSet.size ? '' : 'active'}" data-recipient="room" aria-pressed="${selectedSet.size === 0}">No one</button>`,
     `<button type="button" class="recipient-chip ${everyoneActive ? 'active' : ''}" data-recipient="everyone" aria-pressed="${everyoneActive}" ${installed.length ? '' : 'disabled'}>Everyone</button>`,
-    ...state.agents.map((agent) => `<button type="button" class="recipient-chip ${selectedRecipientIds.has(agent.id) ? 'active' : ''}" data-recipient="${esc(agent.id)}" aria-pressed="${selectedRecipientIds.has(agent.id)}" ${agent.status !== 'installed' ? 'disabled' : ''}>${esc(agent.name)}</button>`)
+    ...state.agents.map((agent) => `<button type="button" class="recipient-chip ${selectedSet.has(agent.id) ? 'active' : ''}" data-recipient="${esc(agent.id)}" aria-pressed="${selectedSet.has(agent.id)}" ${agent.status !== 'installed' ? 'disabled' : ''}>${esc(agent.name)}</button>`)
   ].join('');
-  const selectedNames = state.agents.filter((agent) => selectedRecipientIds.has(agent.id)).map((agent) => agent.name);
+  const selectedNames = state.agents.filter((agent) => selectedSet.has(agent.id)).map((agent) => agent.name);
   const coordinator = state.room.coordinatorId
     ? state.agents.find((agent) => agent.id === state.room.coordinatorId) : null;
   $('#recipientHint').textContent = selectedNames.length
-    ? `Visible to the room · ${selectedNames.join(', ')} will be asked to reply (read-only chat)`
+    ? `Visible to the room · ${selectedNames.join(', ')} will be asked to reply`
     : `Visible to the room · no reply requested${coordinator ? ` · tip: ask ★${coordinator.name} to plan work` : ''}`;
 }
 
@@ -512,7 +512,7 @@ $('#composer').addEventListener('submit', async (event) => {
   try {
     const result = await api('/api/messages', {
       method: 'POST',
-      body: JSON.stringify({ content, agentIds: [...selectedRecipientIds] })
+      body: JSON.stringify({ content, agentIds: recipients.snapshot().selectedIds })
     });
     toast(result.chatTurnsCreated
       ? `Message sent · ${result.chatTurnsCreated} repl${result.chatTurnsCreated > 1 ? 'ies' : 'y'} requested`
@@ -745,14 +745,7 @@ document.addEventListener('click', async (event) => {
       toast('Code copied');
     }
     if (button.dataset.recipient) {
-      const installed = state.agents.filter((agent) => agent.status === 'installed').map((agent) => agent.id);
-      if (button.dataset.recipient === 'room') selectedRecipientIds.clear();
-      else if (button.dataset.recipient === 'everyone') {
-        const everyoneActive = installed.length && installed.every((id) => selectedRecipientIds.has(id));
-        selectedRecipientIds.clear();
-        if (!everyoneActive) installed.forEach((id) => selectedRecipientIds.add(id));
-      } else if (selectedRecipientIds.has(button.dataset.recipient)) selectedRecipientIds.delete(button.dataset.recipient);
-      else selectedRecipientIds.add(button.dataset.recipient);
+      recipients.select(button.dataset.recipient, state.agents);
       renderRecipients();
     }
     if (button.dataset.assignAgent) openTaskDialog({ agentId: button.dataset.assignAgent });

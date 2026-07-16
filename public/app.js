@@ -96,9 +96,9 @@ function renderFeed() {
   }).join('') : '<div class="empty"><div><strong>The room is quiet.</strong>Start a task or address an installed agent.</div></div>';
 }
 
-function taskLane(title, statuses) {
+function taskLane(title, statuses, action = '') {
   const tasks = state.tasks.filter((task) => statuses.includes(task.status));
-  return `<section class="task-lane"><div class="lane-head"><span>${title}</span><span>${tasks.length}</span></div>${tasks.map((task) => {
+  return `<section class="task-lane"><div class="lane-head"><span>${title}</span><span class="lane-actions">${action}<span>${tasks.length}</span></span></div>${tasks.map((task) => {
     const agent = state.agents.find((entry) => entry.id === task.agentId);
     const review = task.status === 'review-required' ? `<div class="task-actions"><button class="tiny-button accept" data-review="${task.id}" data-accepted="true">Accept</button><button class="tiny-button reject" data-review="${task.id}" data-accepted="false">Reject</button></div>` : '';
     const cancel = task.status === 'active' ? `<div class="task-actions"><button class="tiny-button reject" data-cancel="${task.id}">Interrupt</button></div>`
@@ -110,17 +110,37 @@ function taskLane(title, statuses) {
     const deps = waits.length && ['queued', 'waiting', 'ready'].includes(task.status)
       ? `<div class="task-meta"><span>waiting on: ${waits.map((dep) => esc((dep.title || dep.id).slice(0, 24))).join(', ')}</span></div>` : '';
     const tries = task.attempts ? `<span>retry ${task.attempts}${task.retryCap ? `/${task.retryCap}` : ''}</span>` : '';
-    return `<article class="task-card"><h3>${esc(task.title)}</h3><p>${esc(task.objective)}</p><div class="task-meta"><span>${esc(agent?.name || task.agentId)}</span><span>${esc(task.status)}</span>${tries}</div>${blocker}${deps}${review}${cancel}${retry}</article>`;
+    const execution = state.executions.find((entry) => entry.id === task.executionId);
+    const diff = task.status === 'review-required' && task.accessMode === 'workspace-write'
+      ? (execution?.diff
+        ? `<details class="task-diff"><summary>View diff</summary><pre>${esc(execution.diff)}</pre></details>`
+        : '<div class="task-meta"><span>no diff available</span></div>')
+      : '';
+    return `<article class="task-card" data-task="${task.id}"><button class="task-delete" data-delete="${task.id}" title="Delete task" aria-label="Delete task">×</button><h3>${esc(task.title)}</h3><p>${esc(task.objective)}</p><div class="task-meta"><span>${esc(agent?.name || task.agentId)}</span><span>${esc(task.status)}</span>${tries}</div>${blocker}${deps}${diff}${review}${cancel}${retry}</article>`;
   }).join('') || '<div class="blank-state">No tasks</div>'}</section>`;
 }
 
 function renderTasks() {
   $('#taskCount').textContent = state.tasks.length;
+  // Preserve open diffs — and their scroll position, which lives on the node the
+  // innerHTML swap destroys — across SSE-driven re-renders.
+  const open = new Map($$('#taskBoard .task-diff[open]').map((el) => [
+    el.closest('.task-card')?.dataset.task, el.querySelector('pre')?.scrollTop ?? 0
+  ]));
   $('#taskBoard').innerHTML = [
     taskLane('Queued', ['proposed', 'ready', 'waiting', 'queued']),
     taskLane('In motion', ['active', 'review-required']),
-    taskLane('Resolved', ['completed', 'failed', 'cancelled', 'rejected', 'blocked'])
+    taskLane('Resolved', ['completed', 'failed', 'cancelled', 'rejected', 'blocked'],
+      '<button class="text-button" data-clear-resolved="1">Clear resolved</button>')
   ].join('');
+  $$('#taskBoard .task-card').forEach((card) => {
+    if (!open.has(card.dataset.task)) return;
+    const details = card.querySelector('.task-diff');
+    if (!details) return;
+    details.setAttribute('open', '');
+    const pre = details.querySelector('pre');
+    if (pre) pre.scrollTop = open.get(card.dataset.task);
+  });
 }
 
 function renderTaskDependencyOptions() {
@@ -298,6 +318,16 @@ document.addEventListener('click', async (event) => {
     if (button.dataset.retry) {
       await api(`/api/tasks/${button.dataset.retry}/retry`, { method: 'POST', body: '{}' });
       toast('Task retried'); await refresh();
+    }
+    if (button.dataset.delete) {
+      if (!confirm('Delete this task? Executions and audit history are kept.')) return;
+      await api(`/api/tasks/${button.dataset.delete}`, { method: 'DELETE' });
+      toast('Task deleted'); await refresh();
+    }
+    if (button.dataset.clearResolved) {
+      if (!confirm('Delete all resolved tasks?')) return;
+      const result = await api('/api/tasks/clear-resolved', { method: 'POST', body: '{}' });
+      toast(`Cleared ${result.deleted} resolved task${result.deleted === 1 ? '' : 's'}`); await refresh();
     }
     if (button.dataset.execution) { activeExecutionId = button.dataset.execution; renderExecutions(); }
   } catch (error) { toast(error.message, true); }

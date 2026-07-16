@@ -116,10 +116,16 @@ select, input, dialog textarea { color: var(--text); background: #12101d; border
 .task-board { padding: 22px; overflow: auto; display: grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); align-items: start; gap: 12px; }
 .task-lane { min-height: 260px; border: 1px solid var(--border); border-radius: 12px; background: rgba(255,255,255,.017); padding: 11px; }
 .lane-head { display: flex; justify-content: space-between; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .1em; margin-bottom: 10px; }
-.task-card { padding: 12px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--border); margin-bottom: 9px; }
-.task-card h3 { margin: 0 0 7px; font-size: 12px; }.task-card p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.task-card { position: relative; padding: 12px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--border); margin-bottom: 9px; }
+.task-card h3 { margin: 0 0 7px; font-size: 12px; padding-right: 16px; }.task-card p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .task-meta { display: flex; justify-content: space-between; margin-top: 12px; color: #777186; font-size: 9px; }.task-actions { display: flex; gap: 6px; margin-top: 10px; }
 .tiny-button { border: 1px solid var(--border); background: rgba(255,255,255,.03); color: var(--muted); border-radius: 6px; padding: 5px 7px; cursor: pointer; font-size: 9px; }.tiny-button.accept { color: var(--cyan); }.tiny-button.reject { color: var(--red); }
+.task-delete { position: absolute; top: 7px; right: 9px; border: 0; background: none; color: #6d677b; font-size: 13px; line-height: 1; padding: 2px; cursor: pointer; }
+.task-delete:hover { color: var(--red); }
+.lane-actions { display: flex; align-items: center; gap: 8px; text-transform: none; }
+.task-diff { margin-top: 10px; }
+.task-diff summary { cursor: pointer; color: var(--purple); font-size: 10px; }
+.task-diff pre { margin: 6px 0 0; max-height: 200px; overflow: auto; padding: 8px; border-radius: 6px; background: #08070e; border: 1px solid rgba(255,255,255,.06); color: #c8c1d4; font: 9px/1.5 Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
 
 .inspector-column { border-left: 1px solid var(--border); min-height: 0; overflow-y: auto; background: rgba(12,11,20,.42); }
 .inspector-column .panel { border-width: 0 0 1px; padding: 17px; background: transparent; }

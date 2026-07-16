@@ -20,6 +20,7 @@ const contentTypes = {
   '.js': 'text/javascript; charset=utf-8',
   '.svg': 'image/svg+xml'
 };
+const TERMINAL_STATUSES = ['completed', 'failed', 'cancelled', 'rejected', 'blocked']; // = the Resolved lane
 
 function json(response, status, body) {
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
@@ -186,8 +187,19 @@ export class ConclaveApp {
           content: `Execution ${event.status}${event.exitCode === null ? '' : ` with exit code ${event.exitCode}`}.`,
           taskId: event.taskId, executionId: event.executionId, createdAt: event.finishedAt
         });
+        // Per-run diff evidence: a finished agent run on a workspace-write task
+        // stores the workspace diff at finish time (clamped) on its execution.
+        // Shared-workspace caveat: with concurrent write runs the snapshot can
+        // include a sibling run's in-progress changes — it is "workspace state at
+        // finish", not an isolated per-task diff. Serialized mutators make the
+        // capture itself race-free. null = not a git repo; a capture failure also
+        // leaves null (workspace.refresh-failed is audited); '' = clean tree.
+        const diffTask = state.tasks.find((entry) => entry.id === event.taskId);
+        const wantDiff = execution && diffTask?.accessMode === 'workspace-write';
+        if (wantDiff) execution.diff = null;
         try {
           state.workspace = await inspectWorkspace(state.room.workspace);
+          if (wantDiff && state.workspace.git) execution.diff = clampText(state.workspace.diff, 30_000);
         } catch (error) {
           state.audit.push({ id: id('audit'), type: 'workspace.refresh-failed', detail: publicError(error), createdAt: now() });
         }
@@ -266,6 +278,8 @@ export class ConclaveApp {
       reserved = false;
       await this.store.update((next) => {
         const liveTask = next.tasks.find((entry) => entry.id === taskId);
+        // Deleted between the active-flip and here: kill the fresh run instead of orphaning it.
+        if (!liveTask) { this.processes.cancel(execution.id, 'task-deleted'); return; }
         liveTask.executionId = execution.id;
       });
       this.broadcast({ type: 'state.changed', reason: 'task.started', taskId });
@@ -331,7 +345,8 @@ export class ConclaveApp {
   async createTask(input) {
     const title = clampText(input.title || 'Untitled task', 160).trim();
     const objective = clampText(input.objective, 12_000).trim();
-    const accessMode = input.accessMode === 'workspace-write' ? 'workspace-write' : 'read-only';
+    // Absent/unknown accessMode now lands on the write path (behind its unchanged approval gate).
+    const accessMode = input.accessMode === 'read-only' ? 'read-only' : 'workspace-write';
     if (!objective) throw new Error('Task objective is required');
     const agent = this.store.state.agents.find((entry) => entry.id === input.agentId);
     if (!agent) throw new Error('Select a supported agent');
@@ -405,7 +420,10 @@ export class ConclaveApp {
     if (task.accessMode === 'read-only') {
       await this.store.update((state) => {
         const live = state.tasks.find((entry) => entry.id === taskId);
-        if (live) Object.assign(live, { status: 'ready', blocker: null, executionId: null, attempts: 0, updatedAt: now() });
+        // A delete/clear-resolved mutator can land between the snapshot above and
+        // this mutator; bail out instead of auditing a retry of a vanished task.
+        if (!live) throw new Error('Task not found');
+        Object.assign(live, { status: 'ready', blocker: null, executionId: null, attempts: 0, updatedAt: now() });
         state.audit.push({ id: id('audit'), type: 'task.retried', taskId, createdAt: now() });
       });
       this.broadcast({ type: 'state.changed', reason: 'task.retried', taskId });
@@ -433,7 +451,11 @@ export class ConclaveApp {
     });
     const autoApproved = await this.store.update((state) => {
       const live = state.tasks.find((entry) => entry.id === taskId);
-      if (live) Object.assign(live, { status: 'waiting', blocker: null, executionId: null, attempts: 0, updatedAt: createdAt });
+      // A delete/clear-resolved mutator can land between the snapshot above and
+      // this mutator; minting an approval for a vanished task would create a
+      // permanently-pending ghost in the Approval Center. Bail before mutating.
+      if (!live) throw new Error('Task not found');
+      Object.assign(live, { status: 'waiting', blocker: null, executionId: null, attempts: 0, updatedAt: createdAt });
       // Supersede any still-pending approval for this task so at most one live
       // approval gates it — a stale one could otherwise be decided against a
       // task that has already moved on.
@@ -458,6 +480,57 @@ export class ConclaveApp {
     if (autoApproved) await this.startTaskViaAutopilot(taskId, autoApproved);
     await this.schedulePass();
     return this.store.state.tasks.find((entry) => entry.id === taskId);
+  }
+
+  // Deletion works from EVERY state. The executionId read and the row removal
+  // happen inside one serialized mutator — reading the snapshot first could miss
+  // an executionId assigned by an in-flight startTask and orphan the child. The
+  // SIGTERM is asynchronous anyway, so cancelling after the mutator loses nothing;
+  // the eventual execution.finished event finds no task and is a no-op for it.
+  // Executions and audit entries are kept for history.
+  async deleteTask(taskId) {
+    let cancelExecutionId = null;
+    const revive = [];
+    await this.store.update((state) => {
+      const index = state.tasks.findIndex((entry) => entry.id === taskId);
+      if (index === -1) throw new Error('Task not found');
+      const task = state.tasks[index];
+      cancelExecutionId = task.executionId;
+      state.tasks.splice(index, 1);
+      // A deleted task can never satisfy its approval; expire pending gates so the
+      // Approval Center cannot approve a ghost (mirrors schedulePass's dep-block expiry).
+      state.approvals.filter((entry) => entry.taskId === taskId && entry.status === 'pending')
+        .forEach((entry) => Object.assign(entry, { status: 'expired', decidedAt: now(), decidedBy: 'system', reason: 'Task deleted' }));
+      // Unlink from every dependents' dependencies so deletion never strands them
+      // behind a "no longer exists" blocker; schedulePass below drains the unblocked.
+      for (const entry of state.tasks) {
+        if (entry.dependencies?.includes(taskId)) {
+          entry.dependencies = entry.dependencies.filter((depId) => depId !== taskId);
+          entry.updatedAt = now();
+          // A dependent already dep-blocked has left the scheduler's queued/waiting
+          // scan, so unlinking alone never revives it — and Clear-resolved would
+          // silently delete it. Retry it below through the normal gates (a write
+          // task mints a fresh pending approval, never a silent approval bypass).
+          if (entry.status === 'blocked' && /^Dependency /.test(entry.blocker || '')) revive.push(entry.id);
+        }
+      }
+      state.audit.push({ id: id('audit'), type: 'task.deleted', taskId, executionId: cancelExecutionId, detail: task.title, createdAt: now() });
+      state.messages.push({ id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'system',
+        content: clampText(`Deleted “${task.title}” (${task.status}).`), taskId, createdAt: now() });
+    });
+    if (cancelExecutionId) this.processes.cancel(cancelExecutionId, 'task-deleted');
+    for (const dependentId of revive) {
+      // A dependent that cannot be revived (e.g. its agent vanished) must not
+      // fail the delete itself; audit and leave it recoverable via manual Retry.
+      try { await this.retryTask(dependentId); }
+      catch (error) {
+        await this.store.update((state) => state.audit.push({
+          id: id('audit'), type: 'task.retry-failed', taskId: dependentId, detail: publicError(error), createdAt: now() }));
+      }
+    }
+    this.broadcast({ type: 'state.changed', reason: 'task.deleted', taskId });
+    await this.schedulePass();
+    return { deleted: true, taskId };
   }
 
   async decideApproval(approvalId, decision) {
@@ -555,10 +628,15 @@ export class ConclaveApp {
     const detail = publicError(error);
     await this.store.update((state) => {
       const approval = state.approvals.find((entry) => entry.id === approvalId);
-      if (approval && (approval.status === 'auto-approved' || approval.status === 'approved')) {
-        Object.assign(approval, { status: 'pending', decidedAt: null, decidedBy: null, reason: null });
-      }
       const task = state.tasks.find((entry) => entry.id === taskId);
+      if (approval && (approval.status === 'auto-approved' || approval.status === 'approved')) {
+        // A task deleted between the approval commit and the start can never be
+        // started; re-pending its approval would resurrect an undecidable ghost.
+        // Expire it (mirroring deleteTask's expiry of pending gates) and only
+        // re-pend for the genuine pause/agent-unavailable retry cases.
+        if (task) Object.assign(approval, { status: 'pending', decidedAt: null, decidedBy: null, reason: null });
+        else Object.assign(approval, { status: 'expired', decidedAt: now(), decidedBy: 'system', reason: 'Task deleted' });
+      }
       if (task?.status === 'active' && !task.executionId) {
         Object.assign(task, { status: 'waiting', updatedAt: now() });
         const agent = state.agents.find((entry) => entry.id === task.agentId);
@@ -566,7 +644,9 @@ export class ConclaveApp {
       }
       state.audit.push({ id: id('audit'), type, approvalId, taskId, detail, createdAt: now() });
       state.messages.push({ id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'autopilot',
-        content: clampText(`Could not start the run (${detail}); the request was returned to the Approval Center for manual review.`), taskId, createdAt: now() });
+        content: clampText(task
+          ? `Could not start the run (${detail}); the request was returned to the Approval Center for manual review.`
+          : `Could not start the run (${detail}); the task was deleted, so its approval expired.`), taskId, createdAt: now() });
     });
     this.broadcast({ type: 'state.changed', reason: type, taskId });
   }
@@ -665,6 +745,33 @@ export class ConclaveApp {
       this.broadcast({ type: 'state.changed', reason: 'task.reviewed', taskId: reviewMatch[1] });
       await this.schedulePass();
       return json(response, 200, { ok: true });
+    }
+    if (request.method === 'POST' && url.pathname === '/api/tasks/clear-resolved') {
+      let removed = 0;
+      await this.store.update((state) => {
+        const removedIds = new Set(state.tasks.filter((task) => TERMINAL_STATUSES.includes(task.status)).map((task) => task.id));
+        removed = removedIds.size;
+        if (!removed) return;
+        state.tasks = state.tasks.filter((task) => !removedIds.has(task.id));
+        state.approvals.filter((entry) => entry.taskId && removedIds.has(entry.taskId) && entry.status === 'pending')
+          .forEach((entry) => Object.assign(entry, { status: 'expired', decidedAt: now(), decidedBy: 'system', reason: 'Task deleted' }));
+        for (const task of state.tasks) {
+          if (task.dependencies?.some((depId) => removedIds.has(depId))) {
+            task.dependencies = task.dependencies.filter((depId) => !removedIds.has(depId));
+            task.updatedAt = now();
+          }
+        }
+        state.audit.push({ id: id('audit'), type: 'tasks.cleared', detail: `${removed} resolved task(s) deleted`, createdAt: now() });
+        state.messages.push({ id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'system',
+          content: `Cleared ${removed} resolved task(s) from the board.`, createdAt: now() });
+      });
+      this.broadcast({ type: 'state.changed', reason: 'tasks.cleared' });
+      await this.schedulePass();
+      return json(response, 200, { deleted: removed });
+    }
+    const deleteMatch = routeMatch(url.pathname, /^\/api\/tasks\/([^/]+)$/);
+    if (request.method === 'DELETE' && deleteMatch) {
+      return json(response, 200, await this.deleteTask(deleteMatch[1]));
     }
     if (request.method === 'POST' && url.pathname === '/api/commands') {
       const input = await readJsonBody(request);

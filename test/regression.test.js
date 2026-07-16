@@ -293,6 +293,84 @@ test('a failed store save after reserving a slot does not leak the reservation',
   assert.equal(app.processes.load, 0);
 });
 
+test('a retry racing a delete does not mint a pending approval for the vanished task', async (context) => {
+  const { app, base } = await makeApp(context);
+  await seedAgent(app);
+  const task = await seedTask(app, { title: 'Doomed', status: 'failed', accessMode: 'workspace-write' });
+  // Invoke delete first so its mutator is queued between retry's snapshot and
+  // retry's own mutator — the ghost-approval window.
+  const [deletion, retry] = await Promise.allSettled([app.deleteTask(task.id), app.retryTask(task.id)]);
+  assert.equal(deletion.status, 'fulfilled');
+  assert.equal(retry.status, 'rejected');
+  assert.match(retry.reason.message, /Task not found/);
+  const state = await getState(base);
+  assert.equal(state.tasks.find((entry) => entry.id === task.id), undefined);
+  assert.equal(state.approvals.filter((entry) => entry.status === 'pending').length, 0);
+});
+
+test('an approve racing a delete expires the approval instead of resurrecting a pending ghost', async (context) => {
+  const { app, base } = await makeApp(context);
+  await seedAgent(app);
+  const created = await post(base, '/api/tasks', { title: 'Write', objective: 'Edit files', agentId: 'claude', accessMode: 'workspace-write' });
+  assert.equal(created.status, 201);
+  let state = await getState(base);
+  const approval = state.approvals.find((entry) => entry.taskId === created.body.id);
+  assert.equal(approval.status, 'pending');
+  // The delete mutator lands between the approval commit and startTask's
+  // reservation mutator, so the start fails with 'Task not found'.
+  const [decision, deletion] = await Promise.allSettled([
+    app.decideApproval(approval.id, 'approved'),
+    app.deleteTask(created.body.id)
+  ]);
+  assert.equal(deletion.status, 'fulfilled');
+  assert.equal(decision.status, 'rejected');
+  assert.match(decision.reason.message, /Task not found/);
+  state = await getState(base);
+  const reverted = state.approvals.find((entry) => entry.id === approval.id);
+  assert.equal(reverted.status, 'expired');
+  assert.equal(reverted.decidedBy, 'system');
+  assert.equal(reverted.reason, 'Task deleted');
+  assert.equal(state.approvals.filter((entry) => entry.status === 'pending').length, 0);
+  assert.ok(state.audit.some((entry) => entry.type === 'approval.start-failed'));
+  // The expired approval can no longer be decided.
+  const stale = await post(base, `/api/approvals/${approval.id}`, { decision: 'approved' });
+  assert.equal(stale.status, 400);
+  assert.match(stale.body.error, /already decided/);
+});
+
+test('deleting a failed dependency revives blocked dependents through the normal gates', async (context) => {
+  const { app, base } = await makeApp(context);
+  const started = stubRunningProcesses(app);
+  await seedAgent(app);
+  const dep = await seedTask(app, { title: 'Doomed dep', status: 'failed' });
+  const readOnly = await post(base, '/api/tasks', {
+    title: 'Read', objective: 'Inspect', agentId: 'claude', accessMode: 'read-only', dependencies: [dep.id]
+  });
+  const write = await post(base, '/api/tasks', {
+    title: 'Write', objective: 'Edit files', agentId: 'claude', accessMode: 'workspace-write', dependencies: [dep.id]
+  });
+  let state = await getState(base);
+  assert.equal(state.tasks.find((entry) => entry.id === readOnly.body.id).status, 'blocked');
+  assert.equal(state.tasks.find((entry) => entry.id === write.body.id).status, 'blocked');
+  await app.deleteTask(dep.id);
+  state = await getState(base);
+  // The read-only dependent restarts directly; the write dependent returns to
+  // the approval gate with a fresh pending approval — never a silent bypass.
+  const revivedRead = state.tasks.find((entry) => entry.id === readOnly.body.id);
+  assert.equal(revivedRead.status, 'active');
+  assert.equal(revivedRead.blocker, null);
+  assert.equal(started.filter((entry) => entry.taskId === readOnly.body.id).length, 1);
+  const revivedWrite = state.tasks.find((entry) => entry.id === write.body.id);
+  assert.equal(revivedWrite.status, 'waiting');
+  assert.equal(state.approvals.filter((entry) => entry.taskId === write.body.id && entry.status === 'pending').length, 1);
+  // Clear-resolved no longer silently deletes the revived dependents.
+  const cleared = await post(base, '/api/tasks/clear-resolved', {});
+  assert.equal(cleared.body.deleted, 0);
+  state = await getState(base);
+  assert.ok(state.tasks.find((entry) => entry.id === readOnly.body.id));
+  assert.ok(state.tasks.find((entry) => entry.id === write.body.id));
+});
+
 test('finishing one of two concurrent runs on the same agent keeps the agent running', async (context) => {
   const { app, base } = await makeApp(context);
   await seedAgent(app, { activity: 'running', currentTaskId: 'task_2' });

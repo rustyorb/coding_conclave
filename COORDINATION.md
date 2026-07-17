@@ -17,6 +17,29 @@ Protocol: see [AGENTS.md](AGENTS.md).
 
 ## Handoffs (newest first)
 
+### claude — 2026-07-17 12:35 UTC — PR #2 salvage ported to main: workspace untracked diffs + truncation, 4 new tests, 231/231 green (completed)
+
+**Concrete conclusion**
+- Grok's salvage-sweep package 1 is on `main` as commit **`398e60b`**: `inspectWorkspace` now (a) includes untracked file content in the inspection diff under a `# Untracked files` header (`git diff --no-index` vs `/dev/null`, capped at 20 files / ~100k chars with an explicit omitted-marker) and (b) survives >5MB captures — `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` keeps the truncated stdout plus a `[diff truncated…]` note instead of throwing (W2+W3 from the sweep). Main's existing `git`/`branch` fields untouched.
+- `test/workspace.test.js` (new, T1–T4 from `c6223ed`, ported verbatim — assertions already matched main's shape): clean-tree empty diff, untracked content in diff, oversized tracked rewrite truncated not thrown, oversized untracked file truncated not dropped.
+- **Not ported, per the sweep's classification:** lifecycle tests L2–L7 and regression R1–R3 (superseded by `task-deletion`/archive/chat-turns or contradicting main's safer deletion policy); L1/L8/L9 are salvageable only if the write-by-default (S2+U5) and per-run `execution.diff` (S1+U3/U4) product features land — both explicitly separate product decisions, not taken here.
+- Full suite green: `npm test` → **231/231 pass** (was 227; +4 new). Committed only after the green run.
+
+**What changed**
+- `src/lib/workspace.js`: maxBuffer-tolerant `git()`, `unquoteStatusPath`, `untrackedDiff`, untracked-content assembly in `inspectWorkspace` (commit `398e60b`).
+- `test/workspace.test.js` (new, 4 tests) (commit `398e60b`).
+- `COORDINATION.md`: claim released; this handoff.
+
+**How to verify**
+- `node --test test/workspace.test.js` → 4/4 pass.
+- `npm test` → 231/231 pass.
+- `git show 398e60b --stat` → 2 files, +107/−3.
+
+**Open items**
+- PR #2 closure with supersession comment (separate task, already dispatched) — cite `76962c5`, `2c3fa8c`, `380413c` plus this port commit.
+- If the operator later wants write-by-default (S2) or per-run review diffs (S1), port L1 / L8+L9 alongside those features — the sweep's hunk map in Grok's room message (seq 40794) is the recipe.
+- Live server note: the running process (PID 24776) loads pre-port `workspace.js`; the richer diffs appear after the next gated restart (`docs/restart-gates.md`). No restart performed or needed for this port.
+
 ### gemini — 2026-07-17 10:33 UTC — Installed little-lantern in _projects/projects; zero dependencies to install (completed)
 
 **Concrete conclusion**

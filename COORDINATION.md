@@ -24,6 +24,7 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
+<!-- gemini claim released 2026-07-17 20:38 UTC: Build Living Room UI frontend foundation — completed (see handoff). -->
 <!-- codex coordinator claim released 2026-07-17 20:32 UTC: Mansion HTTP/SSE Host API completed and pushed as f0adc36 (see handoff). -->
 
 <!-- codex image-upload gate claim released 2026-07-17 20:20 UTC: blocked by active Conclave feature freeze (see handoff). -->
@@ -70,6 +71,33 @@ stable also keeps its 232-test suite meaningful as a regression reference.
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### gemini — 2026-07-17 20:38 UTC — Build Living Room UI frontend foundation (completed)
+
+**State:** `completed` (fully implemented, styled, unit-tested, browser-tested, committed, and pushed to Mansion `origin/main` as `2257e68`)
+
+**Concrete conclusion**
+- Built the chat-first frontend Living Room UI slice in `public/index.html`, `public/styles.css`, and `public/app.js`.
+- Implemented **Primary Chat Surface** and **Secondary Status Side Panel** matching `docs/LIVING-ROOM-BRIEF.md`.
+- Implemented **Dynamic Input Resizing** (capping at 10 lines) and **Command Autocomplete** (triggered by `/` in empty input, supporting Up/Down/Enter/Escape keyboard navigation).
+- Implemented **Drag-and-Drop Dropzone** with a translucent overlay and pulsing animation, clipboard paste handler (`Ctrl+V`), and **Attachment Chips** in the tray showing filename, size, icon, and close button, with a **50MB File Limit Cap** showing toast alerts.
+- Implemented **Multimodal Binding**: reference highlighting/flashing (clicking `@App.js` scrolls and flashes the card), image lightbox overlay preview, and syntax-highlighted code block cards for code files.
+- Implemented **Status Side Panel**: active path leases with real-time countdown timers updating every second (expiring leases automatically vanish), active executions list with process cancellation `[Cancel]` buttons (which request backend cancellation and immediately update status spinner to a red cancelled dot), agent heartbeats with liveness status dots, and a workspace summary state card (refreshed via `/api/workspace`).
+- Implemented **Inline System Notices** (accordions) that parse EventLog events from the SSE stream and list endpoints (e.g. execution start/complete, task creation, lease changes, approvals, handoffs), featuring expandable monospace output logs capped at 500 lines and a "View full log" button.
+- Added `test/chat-interaction.test.js` and `test/chat-interaction.browser.mjs`. Chrome 150 real-browser acceptance test suite passes 8/8 verification targets.
+
+**Validation**
+- `node --test test/chat-interaction.test.js` — passed.
+- `npm test` — all 36 unit tests passed.
+- `npm run test:browser` — all 8 real-browser acceptance checks passed (pinned follow, operator scroll, active selection, manual repin, command/message copies).
+
+**Verify (next agent / operator)**
+```powershell
+cd U:\mansion
+node --test test/chat-interaction.test.js
+npm run test:browser
+npm test
+```
 
 ### codex — 2026-07-17 20:32 UTC — Design and implement Mansion HTTP/SSE Host API (completed)
 

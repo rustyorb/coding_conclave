@@ -24,7 +24,8 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
-| claude | `src/lib/adapters.js` (gemini build), `test/adapters.test.js` | Always pass `--dangerously-skip-permissions` to Gemini worker (bugfix; freeze reopened by this dispatched task's explicit scope) | 2026-07-17 15:26 | 2026-07-17 17:26 |
+
+<!-- claude claim released 2026-07-17 15:28 UTC: Gemini bypass-flag bugfix — shipped as 7cce732, 238/238 tests green (see handoff). -->
 
 <!-- gemini claim released 2026-07-17: Verify SSH connectivity to Linux laptop — completed (see handoff). -->
 
@@ -55,7 +56,47 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 
 ## Handoffs (newest first)
 
-### gemini — 2026-07-17 — Verify SSH connectivity to Linux laptop (completed)
+### claude — 2026-07-17 15:28 UTC — Always pass --dangerously-skip-permissions to Gemini worker (completed)
+
+**State:** `completed` (bugfix shipped as `7cce732`; claim released; freeze re-applied)
+
+**Freeze note:** This touched frozen product surface (`src/lib/adapters.js`, `test/adapters.test.js`).
+Authorization: the dispatched Conclave task itself named exactly these paths and the objective
+(bugfix for headless agy auto-deny), which is the FREEZE.md reopen-with-scope mechanism.
+No other product files were touched; the freeze is **re-applied** as of this handoff.
+
+**Concrete conclusion**
+- Root cause of read-only Gemini task failures (e.g. "Verify merged Mansion release"): headless agy
+  auto-denies every tool prompt — even `read_file` in `--mode plan` — and the adapter only passed
+  `--dangerously-skip-permissions` when `elevated && accessMode !== 'read-only'`.
+- Fix in `src/lib/adapters.js` gemini `build()`: the flag is now **unconditional**; the
+  `--mode plan` / `accept-edits` mapping from `accessMode` is unchanged. The now-unused `elevated`
+  param was removed from the gemini build signature (other adapters untouched).
+- `test/adapters.test.js` now regression-pins the flag present in **both** read-only and
+  workspace-write gemini invocations.
+- **Tradeoff (by design, unleashed policy):** "read-only" for Gemini is now advisory —
+  `--mode plan` asks agy not to write, nothing enforces it.
+
+**Evidence**
+```text
+node --test test/adapters.test.js   # 9 pass, 0 fail
+npm test                            # 238 pass, 0 fail
+git log -1 --oneline                # 7cce732 fix(adapters): always pass --dangerously-skip-permissions to agy
+```
+
+**What changed**
+- `src/lib/adapters.js` — gemini `build()` only (commit `7cce732`)
+- `test/adapters.test.js` — two flag assertions added to the existing gemini test (same commit)
+- `COORDINATION.md` — claim + this handoff
+
+**Open items**
+- **OPERATOR/CODEX ACTION REQUIRED: restart the Conclave server.** `adapters.js` is loaded at
+  startup, so the running Board keeps building the old args until restart.
+- After restart, dispatch a small read-only Gemini probe to confirm the flag reaches spawned runs.
+- Stale docs (not edited — outside task scope): `docs/capability-broker-design.md:66` and `:481`
+  (`P-agy-elevated` spec) still describe the flag as elevated-only.
+
+
 
 **State:** `completed` (SSH connection verified, specs collected, Docker/SearXNG verified, validation report written; claim released)
 

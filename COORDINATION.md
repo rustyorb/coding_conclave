@@ -25,6 +25,8 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
 
+<!-- gemini claim released 2026-07-17 15:15 UTC: Smoke-test /mnt/mansion and report readiness — FAILED: mountpoint does not exist (see handoff). -->
+
 <!-- grok claim released 2026-07-17 15:10 UTC: Provision DEV disk /mnt/mansion — SAFETY GATE ABORT reconfirmed live (see handoff). -->
 
 <!-- codex claim released 2026-07-17: queued-chat report diagnosed read-only; no product edits under freeze. -->
@@ -41,6 +43,55 @@ stable also keeps its 232-test suite meaningful as a regression reference.
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### gemini — 2026-07-17 15:15 UTC — Smoke-test /mnt/mansion and report readiness (failed — mount does not exist)
+
+**State:** `failed` (remote checks failed; claim released)
+
+**Concrete conclusion**
+- Connection to `mars@192.168.0.69` is successful and passwordless.
+- **Check 1 (mountpoint): FAILED.** `/mnt/mansion` is not a mountpoint (does not exist).
+- **Check 2 (write access): FAILED.** Unable to write because the path does not exist.
+- **Check 3 (fstab reference): FAILED.** No fstab entry references `/mnt/mansion` or the DEV disk UUID (`A0B8277DB82750D8`).
+- **Check 4 (verify mounts): PASSED.** `findmnt --verify` completes with 0 errors (1 warning for `/swap.img`).
+
+**Evidence outputs**
+- **Check 1 (mountpoint):**
+  ```powershell
+  $ ssh -o BatchMode=yes -o ConnectTimeout=10 mars@192.168.0.69 'mountpoint /mnt/mansion; echo EXIT_CODE=$?'
+  mountpoint: /mnt/mansion: No such file or directory
+  EXIT_CODE=1
+  ```
+- **Check 2 (write access):**
+  ```powershell
+  $ ssh -o BatchMode=yes -o ConnectTimeout=10 mars@192.168.0.69 'touch /mnt/mansion/test_file; echo EXIT_CODE=$?'
+  touch: cannot touch '/mnt/mansion/test_file': No such file or directory
+  EXIT_CODE=1
+  ```
+- **Check 3 (fstab reference):**
+  ```powershell
+  $ ssh -o BatchMode=yes -o ConnectTimeout=10 mars@192.168.0.69 'grep -i mansion /etc/fstab; echo "mansion search EXIT_CODE=$?"; grep -i A0B8277DB82750D8 /etc/fstab; echo "UUID search EXIT_CODE=$?"'
+  mansion search EXIT_CODE=1
+  UUID search EXIT_CODE=1
+  ```
+- **Check 4 (verify mounts):**
+  ```powershell
+  $ ssh -o BatchMode=yes -o ConnectTimeout=10 mars@192.168.0.69 'sudo -n findmnt --verify; echo EXIT_CODE=$?'
+  none
+     [W] non-bind mount source /swap.img is a directory or regular file
+
+  0 parse errors, 0 errors, 1 warning
+  EXIT_CODE=0
+  ```
+
+**What changed**
+- `COORDINATION.md` — this handoff only.
+- **Zero changes on Cyberclaw.**
+
+**Next Steps / Handoff**
+- The preceding provisioning task (Grok) aborted due to safety gates (reconfirmed that `DEV` is on `nvme0n1` which carries `/` and `/boot/efi`, which violates the OS partition safety gate).
+- A decision is still required from the Operator (A keep NTFS, B format to ext4, C different volume) before the mount is provisioned.
+- Gemini's independent smoke test remains failed until the mount is successfully provisioned.
 
 ### grok — 2026-07-17 15:10 UTC — Provision DEV disk and mount /mnt/mansion on Cyberclaw (blocked — safety gate)
 

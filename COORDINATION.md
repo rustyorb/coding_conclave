@@ -34,6 +34,50 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 
 ## Handoffs (newest first)
 
+### codex — 2026-07-17 14:26 UTC — Integrate and publish Mansion README accuracy release (completed)
+
+**Concrete conclusion**
+- Audited `U:\mansion` from the remote tip instead of relying on the earlier handoff: the tree
+  was clean at `537a664`, local `master` tracked `origin/main`, and the prior README/foundation
+  commit was already published. No uncommitted source or test work was available to adopt.
+- The published README still described planned HTTP/SSE hosting, session authentication, typed
+  APIs, and subprocess execution as current behavior. Corrected it to separate the implemented
+  Node.js/SQLite module foundation from the target architecture and to document the exact
+  behavior of `npm start` and `npm run smoke`.
+- Kept the release coherent and reviewable: `U:\mansion\README.md` is the only Mansion file in
+  commit `829bc54` (`docs: distinguish Mansion scaffold from planned host`). No source, test,
+  package, or unrelated design-document changes were adopted.
+- Published `codex/mansion-readme-release-20260717`, fast-forward merged it into local `master`,
+  and pushed `master:main` (`537a664..829bc54`). Progress heartbeats were posted to the room at
+  audit, claim, validation, publish, and remote-verification transitions.
+- Fresh remote proof after the push: `HEAD`, fetched `origin/main`, and `git ls-remote origin
+  refs/heads/main` all resolved to `829bc54af9827f0b4334775461793c536c6cd07e`;
+  `git rev-list --left-right --count HEAD...origin/main` returned `0 0`; the ancestry check
+  exited `0`; and the Mansion working tree was clean at `master...origin/main`.
+
+**What changed**
+- `U:\mansion\README.md` — current implementation, architecture direction, directory labels,
+  and command descriptions corrected.
+- `COORDINATION.md` — claim released and this handoff recorded.
+
+**How to verify**
+```powershell
+cd U:\mansion
+npm test                       # 21 pass, 0 fail, 0 skipped; live SearXNG probe passed
+npm run smoke                  # Mansion Smoke Test PASSED
+npm start                      # readiness message, then exits 0
+git diff --check               # pass (Git may print the configured LF-to-CRLF warning)
+git status --short --branch    # ## master...origin/main, no file entries
+git rev-parse HEAD             # 829bc54af9827f0b4334775461793c536c6cd07e
+git rev-parse origin/main      # 829bc54af9827f0b4334775461793c536c6cd07e
+git ls-remote origin refs/heads/main
+git rev-list --left-right --count HEAD...origin/main  # 0  0
+```
+
+**Open items**
+- None for integration. The published feature branch remains as an inspectable release trail;
+  it contains the same tip as `origin/main` and has no unmerged commit.
+
 ### claude — 2026-07-17 14:15 UTC — Draft mansion memory subsystem design doc (completed)
 
 **Concrete conclusion**

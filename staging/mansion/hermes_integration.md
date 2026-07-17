@@ -1,6 +1,8 @@
 # Hermes Mansion Integration & Smoke Check
 
-This document provides documentation, launch paths, and verification evidence for wiring the Hermes Agent installation on **Cyberclaw** (`mars@192.168.0.69`) to use paths under the `/mnt/mansion` DEV mount.
+This document provides documentation, launch paths, and verification evidence for wiring the Hermes Agent installation on **Cyberclaw** (`mars@192.168.0.69`) to use paths under the `/media/mars/Mansion` DEV mount.
+
+> **Mount path (2026-07-17):** The 401 GB NTFS volume (`nvme0n1p3`, UUID `A0B8277DB82750D8`, label still `DEV`) is mounted at **`/media/mars/Mansion`** (same style as `/media/mars/AI` and `/media/mars/Ouroboros`). Previous path `/mnt/mansion` is empty; fstab was updated in place. Hermes `~/.hermes` symlinks target `/media/mars/Mansion/hermes/`.
 
 ---
 
@@ -8,14 +10,14 @@ This document provides documentation, launch paths, and verification evidence fo
 
 To ensure safety and recoverability while executing the integration:
 - **Virtualenv & Repository**: Left physically intact at `/home/mars/.hermes/hermes-agent` (on the ext4 Ubuntu OS partition). Running the Python virtualenv and Node modules directly from NTFS might encounter execution/shebang errors, case-sensitivity issues, or performance degradation.
-- **Data & Configuration Files**: Moved from `/home/mars/.hermes` to `/mnt/mansion/hermes` (on the NTFS DEV partition). This includes SQLite databases (`state.db`, `kanban.db`), logs, skills, plugins, memories, and files like `.env`, `config.yaml`, and `auth.json`.
-- **Symlink Wiring**: Created symbolic links under `/home/mars/.hermes/` pointing to `/mnt/mansion/hermes/` for all moved items. This routes all database writes, logs, and configuration reads transparently to the DEV partition while maintaining full compatibility with the existing binaries and systemd units.
+- **Data & Configuration Files**: Moved from `/home/mars/.hermes` to `/media/mars/Mansion/hermes` (on the NTFS DEV partition). This includes SQLite databases (`state.db`, `kanban.db`), logs, skills, plugins, memories, and files like `.env`, `config.yaml`, and `auth.json`.
+- **Symlink Wiring**: Created symbolic links under `/home/mars/.hermes/` pointing to `/media/mars/Mansion/hermes/` for all moved items. This routes all database writes, logs, and configuration reads transparently to the DEV partition while maintaining full compatibility with the existing binaries and systemd units.
 
 ---
 
 ## 2. Launch Paths from Mansion
 
-Hermes can be executed using either of the following launch paths from `/mnt/mansion`:
+Hermes can be executed using either of the following launch paths from `/media/mars/Mansion`:
 
 ### Path A: Transparent CLI Launch (Symlink-Backed)
 This path is the default and runs the executable wrapper in the user's path. It respects the symlinks in `/home/mars/.hermes/` and resolves everything to the DEV partition.
@@ -29,13 +31,13 @@ This path is the default and runs the executable wrapper in the user's path. It 
 ```
 
 ### Path B: Explicit Environment Override
-This path bypasses the user home directory symlinks and targets `/mnt/mansion/hermes` directly via the `HERMES_HOME` environment variable.
+This path bypasses the user home directory symlinks and targets `/media/mars/Mansion/hermes` directly via the `HERMES_HOME` environment variable.
 ```bash
-HERMES_HOME=/mnt/mansion/hermes /home/mars/.hermes/hermes-agent/venv/bin/hermes <command>
+HERMES_HOME=/media/mars/Mansion/hermes /home/mars/.hermes/hermes-agent/venv/bin/hermes <command>
 ```
 *Example usage:*
 ```bash
-HERMES_HOME=/mnt/mansion/hermes /home/mars/.hermes/hermes-agent/venv/bin/hermes version
+HERMES_HOME=/media/mars/Mansion/hermes /home/mars/.hermes/hermes-agent/venv/bin/hermes version
 ```
 
 ---
@@ -49,14 +51,14 @@ systemctl --user stop hermes-dashboard.service hermes-gateway.service
 ```
 
 ### Moved & Symlinked Items (63 Items Total)
-The migration script moved 63 folders and files to `/mnt/mansion/hermes` and created symlinks back to `/home/mars/.hermes/`.
+The migration script moved 63 folders and files to `/media/mars/Mansion/hermes` and created symlinks back to `/home/mars/.hermes/`.
 ```text
 Total symlinked items: 63
-  [SYMLINK] config.yaml.bak.claudefix -> /mnt/mansion/hermes/config.yaml.bak.claudefix
-  [SYMLINK] config.yaml.bak.20260518_103525 -> /mnt/mansion/hermes/config.yaml.bak.20260518_103525
-  [SYMLINK] state.db -> /mnt/mansion/hermes/state.db
-  [SYMLINK] config.yaml.bak.20260702_233124 -> /mnt/mansion/hermes/config.yaml.bak.20260702_233124
-  [SYMLINK] .skills_prompt_snapshot.json -> /mnt/mansion/hermes/.skills_prompt_snapshot.json
+  [SYMLINK] config.yaml.bak.claudefix -> /media/mars/Mansion/hermes/config.yaml.bak.claudefix
+  [SYMLINK] config.yaml.bak.20260518_103525 -> /media/mars/Mansion/hermes/config.yaml.bak.20260518_103525
+  [SYMLINK] state.db -> /media/mars/Mansion/hermes/state.db
+  [SYMLINK] config.yaml.bak.20260702_233124 -> /media/mars/Mansion/hermes/config.yaml.bak.20260702_233124
+  [SYMLINK] .skills_prompt_snapshot.json -> /media/mars/Mansion/hermes/.skills_prompt_snapshot.json
   ...
 Total physical items: 2
   [PHYSICAL] gateway.lock
@@ -116,12 +118,12 @@ All checks passed! 🎉
 
 ## 5. Recovery Procedure (Rollback)
 
-If you ever need to restore the original Ubuntu OS drive layout and remove the `/mnt/mansion` dependency, you can run the rollback command in the migration helper script:
+If you ever need to restore the original Ubuntu OS drive layout and remove the `/media/mars/Mansion` dependency, you can run the rollback command in the migration helper script:
 ```bash
 python3 /tmp/migrate_hermes.py rollback
 ```
 This command:
 1. Stops the running services.
-2. Identifies all symlinks in `/home/mars/.hermes/` pointing to `/mnt/mansion/hermes/`.
+2. Identifies all symlinks in `/home/mars/.hermes/` pointing to `/media/mars/Mansion/hermes/`.
 3. Deletes those symlinks and moves the physical files and folders back to `/home/mars/.hermes/`.
 4. Restarts the systemd user services.

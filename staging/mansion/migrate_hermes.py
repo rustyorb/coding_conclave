@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 HERMES_HOME = Path('/home/mars/.hermes')
-MANSION_HERMES = Path('/mnt/mansion/hermes')
+MANSION_HERMES = Path('/media/mars/Mansion/hermes')
 
 EXCLUDE_NAMES = {'hermes-agent', '.', '..'}
 

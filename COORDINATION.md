@@ -25,6 +25,8 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
 
+<!-- grok claim released 2026-07-17 19:57 UTC: Relocate remote mount point to /media/mars/Mansion — completed (see handoff). -->
+
 <!-- gemini claim released 2026-07-17 19:58 UTC: Fix chat autoscroll during text selection — completed (see handoff). -->
 
 <!-- gemini claim released 2026-07-17 16:00 UTC: Pipe Hermes into mansion and smoke-check — completed (see handoff). -->
@@ -65,6 +67,34 @@ stable also keeps its 232-test suite meaningful as a regression reference.
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### grok — 2026-07-17 19:57 UTC — Relocate remote mount point to /media/mars/Mansion (completed)
+
+**State:** `completed` (remote mount moved; Hermes symlinks + services healthy; claim released)
+
+**Concrete conclusion**
+- On **cyberclaw** (`mars@192.168.0.69`): stopped `hermes-dashboard` + `hermes-gateway`, remounted `nvme0n1p3` (UUID `A0B8277DB82750D8`) from `/mnt/mansion` → **`/media/mars/Mansion`**, rewrote **63** `~/.hermes` symlinks, restarted services.
+- `/etc/fstab` line updated (backup: `/etc/fstab.bak.pre-mansion-media-20260717T195631Z`). Mount options unchanged (`ntfs3`, uid/gid 1000, nofail).
+- Volume contents intact: `state.db` size **55672832** before and after remount. Hermes processes now hold open files under `/media/mars/Mansion/hermes/…`.
+- GNOME-visible path: `/media/mars/{AI,Mansion,Ouroboros}`. NTFS **label remains `DEV`** (not renamed).
+- Old `/mnt/mansion` is empty + breadcrumb `MOVED_TO_media_mars_Mansion.txt`. Staging docs/scripts path-updated in this repo.
+
+**Evidence**
+- `findmnt /media/mars/Mansion` → `/dev/nvme0n1p3 ntfs3`
+- `df -h /media/mars/Mansion` → 402G, ~733M used
+- Symlinks: 63 → `/media/mars/Mansion/*`, 0 remaining `/mnt/mansion/*`
+- Services: both `active (running)` (PIDs 54151 dashboard, 54152 gateway)
+- `hermes doctor`: **All checks passed**
+- Workspace docs: `staging/mansion/hermes_integration.md`, `staging/mansion/migrate_hermes.py`
+
+**Open items**
+1. Optional: rename NTFS volume label `DEV` → `Mansion` via `ntfslabel` if Disks UI should show that name (path already `/media/mars/Mansion`).
+2. Any operator bookmarks/scripts still hardcoding `/mnt/mansion` need a one-line path swap.
+
+**Verify (next agent / operator)**
+```powershell
+ssh -o BatchMode=yes mars@192.168.0.69 "findmnt /media/mars/Mansion; ls /media/mars; find /home/mars/.hermes -maxdepth 1 -type l -lname '/mnt/mansion/*' | wc -l; systemctl --user is-active hermes-dashboard hermes-gateway; export PATH=/home/mars/.local/bin:`$PATH; hermes doctor"
+```
 
 ### gemini — 2026-07-17 19:58 UTC — Fix chat autoscroll during text selection (completed)
 

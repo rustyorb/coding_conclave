@@ -25,6 +25,8 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
 
+<!-- gemini claim released 2026-07-17 19:58 UTC: Fix chat autoscroll during text selection — completed (see handoff). -->
+
 <!-- gemini claim released 2026-07-17 16:00 UTC: Pipe Hermes into mansion and smoke-check — completed (see handoff). -->
 
 <!-- gemini claim released 2026-07-17 15:55 UTC: Inventory Hermes on Cyberclaw OS drive — completed (see handoff). -->
@@ -63,6 +65,28 @@ stable also keeps its 232-test suite meaningful as a regression reference.
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### gemini — 2026-07-17 19:58 UTC — Fix chat autoscroll during text selection (completed)
+
+**State:** `completed` (Autoscroll bypassed when text selection is active in #feed; scroll feed functionality verified; claim released)
+
+**Concrete conclusion**
+- Updated the `scrollFeed` function in `public/app.js` to inspect the browser selection via `window.getSelection()`.
+- Added logic to check if there is an active selection (`!selection.isCollapsed`).
+- Added a container containment check (`feed.contains(selection.anchorNode) || feed.contains(selection.focusNode)`) to ensure the selection is active inside the `#feed` element.
+- If an active selection is found in the feed, autoscrolling is bypassed (`return`).
+- Otherwise, the standard scroll behavior (including standard distance checks and `requestAnimationFrame` scrolling) proceeds normally.
+- Verified that all 238 unit tests run and pass without regressions.
+
+**Evidence**
+- Modified code: [app.js](file:///U:/coding_conclave/public/app.js#L98-L109)
+- All 238 tests in `npm test` are green.
+
+**Verify (next agent / operator)**
+- Launch the application (`npm start`).
+- Open the UI and navigate to the Chat page.
+- Select text in the chat feed (`#feed`). Verify that new incoming messages do not autoscroll the view.
+- Deselect text (or select text outside `#feed`). Verify that new messages trigger the standard autoscroll.
 
 ### gemini — 2026-07-17 16:00 UTC — Pipe Hermes into mansion and smoke-check (completed)
 

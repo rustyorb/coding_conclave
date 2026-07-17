@@ -25,6 +25,8 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
 
+<!-- grok claim released 2026-07-17 15:20 UTC: Finish Cyberclaw foundation — completed (see handoff). -->
+
 <!-- gemini claim released 2026-07-17 15:15 UTC: Smoke-test /mnt/mansion and report readiness — FAILED: mountpoint does not exist (see handoff). -->
 
 <!-- grok claim released 2026-07-17 15:10 UTC: Provision DEV disk /mnt/mansion — SAFETY GATE ABORT reconfirmed live (see handoff). -->
@@ -43,6 +45,77 @@ stable also keeps its 232-test suite meaningful as a regression reference.
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### grok — 2026-07-17 15:20 UTC — Finish Cyberclaw foundation (completed)
+
+**State:** `completed` (remote foundation ready; claim released)
+
+**Concrete conclusions**
+1. **Passwordless SSH:** OK — `ssh -o BatchMode=yes -o ConnectTimeout=10 mars@192.168.0.69` → host `cyberclaw`, user `mars` (uid 1000), `sudo -n true` OK.
+2. **DEV identity (positive):** partition **`/dev/nvme0n1p3`**, `LABEL=DEV`, `UUID=A0B8277DB82750D8`, `TYPE=ntfs`, size ~401G. **Not** a whole spare disk. Parent disk `nvme0n1` also hosts Ubuntu `/` (`nvme0n1p4`) and `/boot/efi` (`nvme0n1p5`); those partitions were never reformatted or remounted by this pass.
+3. **ext4 provisioning:** **skipped (not needed for mount goal; wipe avoided).** Volume had residual Windows metadata only (`$RECYCLE.BIN`, `desktop.ini`, `System Volume Information`, ~110M used). Prior A/B/C matrix: chose safe **A — keep NTFS**, remount only. No `mkfs`, no partition table changes.
+4. **Persistent mount:** `/mnt/mansion` mounted from UUID via `ntfs3`; fstab line by UUID; `systemctl daemon-reload` run; unmount+`mount /mnt/mansion` (fstab) succeeds. **Full reboot not executed** — persistence config verified via fstab remount path, not a live reboot cycle.
+5. **Ownership / write:** `mars:mars` (uid/gid 1000); directory mode `drwxr-xr-x` after `chmod u+w` on mount root; `touch`/`rm` write probe OK.
+6. **Free space:** **402G available** of 402G (≈1% used).
+7. **OS-drive safety:** `/` still `nvme0n1p4` ext4 UUID `9caadf4d-b415-4a34-bd88-2708c5f8738d`; `/boot/efi` still `nvme0n1p5` vfat UUID `B1F2-739D`. DEV remains `ntfs` LABEL=DEV same UUID. No writes to OS partitions.
+
+**Remote changes (Cyberclaw only)**
+- `mkdir -p /mnt/mansion`
+- unmounted udisks path `/media/mars/DEV` (if present)
+- mounted `/dev/disk/by-uuid/A0B8277DB82750D8` → `/mnt/mansion` (`ntfs3`, `uid=1000,gid=1000,umask=022`)
+- `/etc/fstab` append/update for `/mnt/mansion` by UUID
+- backup: `/etc/fstab.bak.mansion-20260717T151359Z`
+- `chmod u+w /mnt/mansion` (once, for writeable root on NTFS)
+- `systemctl daemon-reload`
+
+**fstab line (no secrets)**
+```text
+UUID=A0B8277DB82750D8 /mnt/mansion ntfs3 defaults,uid=1000,gid=1000,umask=022,iocharset=utf8,nofail,x-systemd.device-timeout=10 0 0
+```
+
+**Evidence (commands + results)**
+```text
+# SSH
+ssh -o BatchMode=yes -o ConnectTimeout=10 mars@192.168.0.69 'hostname; whoami; sudo -n true'
+# → cyberclaw / mars / OK
+
+# Mount + free space
+findmnt /mnt/mansion
+# → /mnt/mansion  /dev/nvme0n1p3  ntfs3  uid=1000,gid=1000,...
+df -hT /mnt/mansion
+# → /dev/nvme0n1p3  ntfs3  402G  110M  402G  1%  /mnt/mansion
+
+# Write + owner
+ls -ld /mnt/mansion
+# → drwxr-xr-x 1 mars mars ... /mnt/mansion
+touch /mnt/mansion/.mansion-write-test && rm -f /mnt/mansion/.mansion-write-test
+# → WRITE_OK
+
+# fstab persistence config (no reboot)
+grep mansion /etc/fstab
+sudo umount /mnt/mansion && sudo mount /mnt/mansion && findmnt /mnt/mansion
+# → FSTAB_MOUNT_OK
+
+# OS untouched
+findmnt /          # /dev/nvme0n1p4 ext4
+findmnt /boot/efi  # /dev/nvme0n1p5 vfat
+blkid /dev/nvme0n1p3  # LABEL="DEV" UUID="A0B8277DB82750D8" TYPE="ntfs"
+
+# findmnt --verify → 0 errors (warnings: swap.img; ntfs3 vs on-disk ntfs type name)
+```
+
+**Workspace changes**
+- `COORDINATION.md` — claim + this handoff only.
+
+**Open items / next agent (Gemini: Connect Hermes to Mansion)**
+- Foundation ready for Hermes integration against **`/mnt/mansion`**.
+- Optional operator follow-ups (not done): full reboot smoke; convert DEV → ext4 (option B wipe) if Linux-native FS required later.
+- Residual Windows dirs still present on volume (harmless metadata).
+
+**Verify (next agent)**
+```powershell
+ssh -o BatchMode=yes -o ConnectTimeout=10 mars@192.168.0.69 "findmnt /mnt/mansion; df -hT /mnt/mansion; ls -ld /mnt/mansion; touch /mnt/mansion/.probe && rm /mnt/mansion/.probe; grep mansion /etc/fstab; findmnt / /boot/efi; blkid /dev/nvme0n1p3"
+```
 
 ### gemini — 2026-07-17 15:15 UTC — Smoke-test /mnt/mansion and report readiness (failed — mount does not exist)
 

@@ -34,6 +34,33 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 
 ## Handoffs (newest first)
 
+### gemini — 2026-07-17 14:32 UTC — Merge, push, and refresh README in U:\mansion (completed)
+
+**Concrete conclusion**
+- Checked `git status` and `git branch -a` in `U:\mansion`. Checked out local branch `main` to track `origin/main` cleanly.
+- Confirmed all branches (including `codex/mansion-readme-release-20260717`) are fully merged; `git branch -a --no-merged` is empty.
+- Verified that `README.md` already contains comprehensive documentation of the SearXNG research client and its base-URL configuration (`http://192.168.0.177:8888`).
+- Ran the test suite (`npm test`), which verified 21 passing tests including the live SearXNG LAN client probe against `http://192.168.0.177:8888`.
+- Updated `README.md` to append a "Verification Status" section documenting the live SearXNG and test suite results.
+- Committed changes as `4f40176` and successfully pushed `main` to `origin/main` (`https://github.com/rustyorb/coding_mansion.git`).
+
+**What changed**
+- `U:\mansion\README.md` — Appended verification status (live LAN client and test suite run logs).
+- `U:\coding_conclave\COORDINATION.md` — Released lease and recorded this handoff.
+
+**How to verify**
+```powershell
+cd U:\mansion
+npm test                       # 21 pass, 0 fail, 0 skipped; live SearXNG probe passes
+git status --short --branch    # ## main...origin/main, no file entries
+git rev-parse HEAD             # 4f401761616c14c4495e865f14e21a8cd36e80b2 (or matching tip)
+git log -n 1                   # shows the Gemini commit
+git ls-remote origin refs/heads/main
+```
+
+**Open items**
+- None.
+
 ### codex — 2026-07-17 14:26 UTC — Integrate and publish Mansion README accuracy release (completed)
 
 **Concrete conclusion**

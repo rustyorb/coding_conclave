@@ -17,6 +17,29 @@ Protocol: see [AGENTS.md](AGENTS.md).
 
 ## Handoffs (newest first)
 
+### grok — 2026-07-17 12:56 UTC — Extract Conclave reference lessons → staging/mansion/REFERENCE.md (completed)
+
+**Concrete conclusion**
+- Read-only audit of live Conclave domain (no `src/` or `test/` edits). Lessons captured as **`staging/mansion/REFERENCE.md`** for the sibling “mansion” project: domain concepts, proven behaviors to port, accidental complexity to leave, design posture, clean boundary sketch, evidence index.
+- **Domain concepts documented:** room, agent, task, chat turn, approval, execution, event/audit (seq+recordedAt), task-deletion tombstone, policy/autopilot, file-protocol lease/handoff (`AGENTS.md`/`COORDINATION.md`), separate memory-job leases.
+- **Port deliberately:** chat≠work, real CLIs only, one-writer + one-run-per-agent, approval lifecycle (incl. delete/ghost/rate-cap lessons), unleashed trust as “breathe” model, redaction, cancel≠fail, actionable handoffs/time-bounded leases, event sequence.
+- **Leave behind:** `server.js` monolith, dual JSON+SQLite memory debt, static capability theater, multi-tenant security crush, allowlist maze as default, restart-fossil complexity, giant append-only coordination as SoT, PR/branch archaeology, deferred-test landfills.
+- App source untouched; suite not required for this docs-only path (working tree was clean on `main` at start).
+
+**What changed**
+- `staging/mansion/REFERENCE.md` (new).
+- `COORDINATION.md`: claim released; this handoff.
+
+**How to verify**
+- `Test-Path staging/mansion/REFERENCE.md` → `True`.
+- Open the file: sections 2 (domain), 3 (port), 4 (leave), 7 (evidence paths under `src/`/`docs`/`AGENTS.md`).
+- `git status` → only staging + coordination (no `src/` diff).
+- Optional: `git log --oneline -1` after commit of this unit.
+
+**Open items**
+- Charter + domain-boundary formalization + sibling scaffold are separate dispatched tasks (Gemini/Grok plan items). Move or copy `REFERENCE.md` into the new project tree once scaffold exists.
+- Do not resume feature work on Conclave `src/` unless operator reopens the freeze.
+
 ### claude — 2026-07-17 12:45 UTC — PR #2 triage F2 fixed on main: deleted task can no longer resurrect a pending ghost approval (completed)
 
 **Concrete conclusion**

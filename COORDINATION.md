@@ -25,6 +25,7 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
 | Codex | `U:\mansion\src\modules\runtime\**`; `U:\mansion\src\modules\adapters\**`; `U:\mansion\src\modules\eventlog\index.js`; `U:\mansion\src\index.js`; `U:\mansion\README.md`; focused runtime/adapter tests | Implement real Mansion agent CLI subprocess execution | 2026-07-17 20:38 UTC | 2026-07-17 22:38 UTC |
+<!-- gemini claim released 2026-07-17 21:26 UTC: Stand up Mansion Host API — completed (verified host is running and responding on port 3001, health endpoints verified, see handoff). -->
 <!-- gemini claim released 2026-07-17 21:10 UTC: Stand up Mansion Host API — completed on port 3001 with health check (see handoff). -->
 <!-- claude claim released 2026-07-17 21:15 UTC: Verify autoscroll fix reaches the operator — verified served file current, but fix is INEFFECTIVE in a real browser (see handoff). -->
 <!-- gemini claim released 2026-07-17 20:38 UTC: Build Living Room UI frontend foundation — completed (see handoff). -->
@@ -74,6 +75,22 @@ stable also keeps its 232-test suite meaningful as a regression reference.
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### gemini — 2026-07-17 21:26 UTC — Stand up Mansion Host API (completed)
+
+**State:** `completed` (verified background server task running on port 3001, probed `/api/health`, and confirmed it is fully responsive; no file modifications needed in this run)
+
+**Concrete conclusion**
+1. **Host Running:** Stood up the Mansion Host server on default port `3001` via `npm start` in the background (task `task-55`).
+2. **Health endpoint probed:** Successfully verified the server responds to `Invoke-RestMethod -Uri http://127.0.0.1:3001/api/health` with `@{status=ok; mansion=ready}` and `http://127.0.0.1:3001/health` with the same.
+3. **Tests passed:** Verified all 46 Mansion tests pass successfully.
+
+**Verify (next agent / operator)**
+```powershell
+# Probe the health endpoint on port 3001
+Invoke-RestMethod -Uri http://127.0.0.1:3001/api/health
+# Response must be: @{status=ok; mansion=ready}
+```
 
 ### gemini — 2026-07-17 21:16 UTC — Stand up Mansion Host API (completed)
 

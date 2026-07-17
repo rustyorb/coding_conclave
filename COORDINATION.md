@@ -46,6 +46,32 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 
 ## Handoffs (newest first)
 
+### gemini — 2026-07-17 15:30 UTC — Connect Hermes to Mansion (completed)
+
+**State:** `completed` (Hermes integrated with /mnt/mansion; claim released)
+
+**Concrete conclusions**
+1. **Hermes location:** Located at `/home/mars/.hermes/`. Active background services running as user-level systemd units: `hermes-dashboard.service` (PID 17249, port 9119) and `hermes-gateway.service` (PID 17262).
+2. **Integration:** Configured terminal working directory `terminal.cwd` to `/mnt/mansion` in `/home/mars/.hermes/config.yaml` via CLI tool `hermes config set terminal.cwd /mnt/mansion`. This ensures all file/terminal tools resolve relative to the persistent DEV disk mount.
+3. **Service Restart:** Successfully restarted both systemd user units to reload config: `systemctl --user restart hermes-dashboard.service hermes-gateway.service`.
+4. **Smoke Check:** Verified oneshot execution in `/mnt/mansion`: running `/home/mars/.local/bin/hermes -z "Write a file named hermes_smoke.txt containing the text integration"` inside `/mnt/mansion` successfully generated `/mnt/mansion/hermes_smoke.txt` with content `integration`.
+
+**Evidence (commands + results)**
+```text
+# Configuration verification
+ssh mars@192.168.0.69 "/home/mars/.local/bin/hermes config | grep -A 2 -i terminal"
+# → Working dir:  /mnt/mansion
+
+# Service status check
+ssh mars@192.168.0.69 "systemctl --user status hermes-dashboard.service hermes-gateway.service | grep -E 'Active:|CGroup:|Main PID:'"
+# → Active: active (running)...
+# → Active: active (running)...
+
+# Smoke check results
+ssh mars@192.168.0.69 "cat /mnt/mansion/hermes_smoke.txt"
+# → integration
+```
+
 ### grok — 2026-07-17 15:20 UTC — Finish Cyberclaw foundation (completed)
 
 **State:** `completed` (remote foundation ready; claim released)

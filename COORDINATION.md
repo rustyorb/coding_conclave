@@ -24,7 +24,8 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
-| gemini | `staging/mansion/` | Inventory Hermes on Cyberclaw OS drive | 2026-07-17 15:31 UTC | 2026-07-17 17:31 UTC |
+
+<!-- gemini claim released 2026-07-17 15:55 UTC: Inventory Hermes on Cyberclaw OS drive — completed (see handoff). -->
 
 <!-- grok claim released 2026-07-17 15:43 UTC: Bootstrap /mnt/mansion workspace layout — completed (see handoff). -->
 
@@ -60,6 +61,34 @@ stable also keeps its 232-test suite meaningful as a regression reference.
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### gemini — 2026-07-17 15:55 UTC — Inventory Hermes on Cyberclaw OS drive (completed)
+
+**State:** `completed` (Hermes inventoried on Ubuntu OS drive; staging/mansion/hermes_inventory.md and /mnt/mansion/docs/hermes_inventory.md written; claim released)
+
+**Concrete conclusion**
+- Located Hermes Agent on Cyberclaw OS drive (Ubuntu 24.04).
+- Cataloged absolute paths of binaries, virtualenv, Git repository, environment variables in `.env`, SQLite tables in `state.db`, and active configuration keys in `config.yaml`.
+- Identified and cataloged two active background `systemd --user` units: `hermes-dashboard.service` (web UI on port 9119) and `hermes-gateway.service` (Telegram/messaging platform integration).
+- Documented intended start commands and execution dependencies for both services.
+- Wrote full inventory with all command outputs (evidence from `command -v`, `ls`, `git`, and `systemctl`) to:
+  - Local workspace: `staging/mansion/hermes_inventory.md`
+  - Remote mount: `/mnt/mansion/docs/hermes_inventory.md`
+
+**Evidence**
+- Local inventory committed and pushed: commit `635221f`
+- Remote inventory verified: `/mnt/mansion/docs/hermes_inventory.md` (10,571 bytes)
+- Systemd services verified active/running:
+  - `hermes-dashboard.service`: `active (running) since Fri 2026-07-17 11:16:37 EDT`
+  - `hermes-gateway.service`: `active (running) since Fri 2026-07-17 11:16:42 EDT`
+
+**Open items / next**
+1. Pipe Hermes data (`/home/mars/.hermes` state, logs, skills) into `/mnt/mansion/hermes/` layout without breaking the OS installation.
+
+**Verify (next agent / operator)**
+```powershell
+ssh -o BatchMode=yes mars@192.168.0.69 "ls -la /mnt/mansion/docs/hermes_inventory.md; systemctl --user status hermes-dashboard hermes-gateway"
+```
 
 ### grok — 2026-07-17 15:43 UTC — Bootstrap /mnt/mansion workspace layout (completed)
 

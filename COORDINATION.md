@@ -24,6 +24,9 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
+| gemini | `staging/mansion/` | Inventory Hermes on Cyberclaw OS drive | 2026-07-17 15:31 UTC | 2026-07-17 17:31 UTC |
+
+<!-- grok claim released 2026-07-17 15:43 UTC: Bootstrap /mnt/mansion workspace layout — completed (see handoff). -->
 
 <!-- gemini claim released 2026-07-17 15:30 UTC: Gate on Cyberclaw SSH and /mnt/mansion readiness — completed (see handoff). -->
 
@@ -57,6 +60,54 @@ stable also keeps its 232-test suite meaningful as a regression reference.
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### grok — 2026-07-17 15:43 UTC — Bootstrap /mnt/mansion workspace layout (completed)
+
+**State:** `completed` (layout + README + Mansion checkout on DEV mount; claim released)
+
+**Concrete conclusion**
+- On `mars@192.168.0.69` under **`/mnt/mansion` only**: created `repos/`, `data/`, `hermes/`, `logs/` (owner `mars:mars` via mount uid/gid=1000).
+- Wrote `/mnt/mansion/README.md` (purpose + layout + safety) and `/mnt/mansion/repos/README.md`.
+- **Did not** format any disk; **did not** write outside `/mnt/mansion` (left NTFS `$RECYCLE.BIN` / `System Volume Information`, pre-existing `docs/`, `hermes_smoke.txt` alone).
+- Mansion repo landed at `/mnt/mansion/repos/mansion` tip **`4f4017665a3806f1d57024b20a2ac3cddc558250`** (`main`), origin `https://github.com/rustyorb/coding_mansion.git`.
+- Direct `git clone` from GitHub on cyberclaw **failed** (no interactive HTTPS credentials). Bootstrap used a **git bundle** from Windows sibling `U:\mansion` (same tip Codex verified). Local bundle removed after transfer.
+
+**Evidence**
+```text
+df -h /mnt/mansion
+# /dev/nvme0n1p3  402G  111M  402G   1% /mnt/mansion
+
+findmnt /mnt/mansion
+# /mnt/mansion /dev/nvme0n1p3 ntfs3 rw,...,uid=1000,gid=1000,...
+
+ls -la /mnt/mansion
+# README.md, repos/, data/, hermes/, logs/, docs/ (pre-existing), …
+
+ls -la /mnt/mansion/repos
+# mansion/  README.md
+
+cd /mnt/mansion/repos/mansion && git rev-parse HEAD && git status -sb && git remote -v
+# 4f4017665a3806f1d57024b20a2ac3cddc558250
+# ## main
+# origin  https://github.com/rustyorb/coding_mansion.git (fetch/push)
+
+stat -c '%U:%G %n' /mnt/mansion/{repos,data,hermes,logs,README.md}
+# mars:mars …
+```
+
+**What changed**
+- Remote only: `/mnt/mansion/{README.md,repos/,data/,hermes/,logs/,repos/README.md,repos/mansion/}`
+- Local: `COORDINATION.md` claim + this handoff. Conclave freeze intact (no `src/` product work).
+
+**Open items / next**
+1. Gemini (or follow-up): finish **Hermes inventory** on OS drive; pipe into `/mnt/mansion/hermes/` without moving OS Hermes.
+2. Optional: configure GitHub auth on cyberclaw so `git fetch origin` works without re-bundling from Windows.
+3. `npm install` / smoke on cyberclaw under `/mnt/mansion/repos/mansion` when ready (not done this run).
+
+**Verify (next agent / operator)**
+```powershell
+ssh -o BatchMode=yes mars@192.168.0.69 "df -h /mnt/mansion; ls -la /mnt/mansion; ls -la /mnt/mansion/repos; git -C /mnt/mansion/repos/mansion rev-parse HEAD; git -C /mnt/mansion/repos/mansion status -sb"
+```
 
 ### gemini — 2026-07-17 15:30 UTC — Gate on Cyberclaw SSH and /mnt/mansion readiness (completed)
 

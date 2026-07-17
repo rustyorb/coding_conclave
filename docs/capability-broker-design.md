@@ -3,12 +3,14 @@
 **Status:** design only (no product flip)  
 **Author:** Grok (Conclave room)  
 **Date:** 2026-07-15  
+**Amended:** 2026-07-15 — trust boundaries, assign/write authority matrix, verification hooks (as-built + target)
 **Depends on (landed in-tree, not yet necessarily on `origin/main`):**
 
 1. Grok cancel-bleed fix — per-invocation / finished-run drain of stream accumulators  
 2. Execution `command` previews — create-time + `/api/state` projection via `previewCommand`  
+3. Coordinator runnable assign authority (gated plans → board tasks; unleashed still open)
 
-**Sources:** Codex live CLI inventory (room 2026-07-14), re-probed on this host 2026-07-15, current `src/lib/adapters.js` / `process-manager.js` / `server.js` / `policy.js`, PRD §4.5 / §8 / §14 / §20.
+**Sources:** Codex live CLI inventory (room 2026-07-14), re-probed on this host 2026-07-15, current `src/lib/adapters.js` / `process-manager.js` / `server.js` / `policy.js`, room trust (`gated`/`unleashed`), PRD §4.5 / §8 / §14 / §20.
 
 ---
 
@@ -119,13 +121,20 @@ Still means “successful prior execution.” The design **splits** that into:
 3. Apply **policy-bound tool/sandbox profiles at spawn** using each CLI’s native flags.
 4. Define where a **Conclave capability broker** is required vs where we **delegate to the CLI sandbox**.
 5. Keep `/api/state` lean: probe evidence is summary + pointers, not raw dumps.
+6. Document **trust boundaries** and an explicit **who can assign / who can write** matrix (as-built + broker target).
+7. Specify **verification hooks** — the lifecycle seams where profiles are produced and consumed without conflating connection health with write proof.
 
 ### Non-goals (this design / phase 1–2)
 
 - Intercepting every in-CLI tool call for interactive Conclave Approvals (no normalized `tool.approval.events` yet).
 - Implementing a full MCP host inside Conclave for agy.
-- Giving agents the operator session token.
+- Giving agents the operator session token (or any operator-only cookie/header).
 - Unifying four CLIs into one fake tool API.
+- **This document ships no runtime switch, no new API routes, and no badge UI change.** Implementation is separate phased PRs (§10).
+- Soft-deleting or rewriting `COORDINATION.md` social claims via the broker in phase 1 (optional later enforcement).
+- Treating “connection: verified” (any successful run) as proof of write/MCP capability (the whole point of this design is to stop that lie).
+- Auto-running write canary probes against dirty operator workspaces without opt-in.
+- Replacing room trust (`gated`/`unleashed`) or autopilot policy with capability profiles — profiles **inform** those systems; they do not replace operator trust.
 
 ---
 
@@ -241,6 +250,140 @@ The broker Codex sketched for autonomy (structured intents, single-use authority
 > If the action mutates **Conclave state** or **room policy**, it goes through the broker.  
 > If the action mutates **workspace files/shell inside an already-approved agent run**, it stays inside the CLI sandbox Conclave configured at spawn.  
 > If we cannot observe or constrain it, we must **not** advertise it as a Conclave-verified capability.
+
+### 6.4 Trust boundaries (as-built)
+
+These are the real seams in `server.js` / `policy.js` today. The broker design **must not blur** them.
+
+| Boundary | Inside (trusted) | Outside (untrusted relative to Conclave) |
+|---|---|---|
+| **Operator session** | Browser with session cookie / `X-Conclave-Token`, or open-access LAN mode | Agent child processes, other local processes without the token |
+| **Control plane** | Node server process: state store, approvals, board, roles, trust toggle, SSE | CLI children, MCP servers attached to those CLIs |
+| **Data plane (per run)** | Workspace FS + shell under CLI sandbox flags Conclave set at spawn | Same FS/shell if elevation / wrong flags — still not Conclave control plane |
+| **Room trust** | `room.trust === 'unleashed'` is an **operator** decision (token-gated `POST /api/room/trust`) | Agents cannot flip trust; they only receive elevated spawn flags when write + unleashed |
+| **One-writer / pause / concurrency** | Host scheduler always enforces | CLI cannot see or override other agents’ runs |
+| **Audit** | Every material decision lands in `state.audit` | Model self-report is not audit evidence |
+
+**Hard invariants (product + security):**
+
+1. **No operator token in child env.** Ever. Broker intents are the substitute for “agent wants to mutate the room.”
+2. **Chat ≠ task.** Ordinary chat never silently becomes work; plan blocks and operator task create are explicit.
+3. **Write authority is dual-gated:** (a) who may *create/assign* a write task, (b) who may *approve* the write run. Capability verification is a third, optional gate on (b) and a soft gate on (a) in the UI.
+4. **Unleashed is not “agents own the host.”** It only relaxes Conclave auto-approval and spawn elevation; Host/Origin CSRF guards, one-writer, pause, and audit remain.
+5. **Open access (`CONCLAVE_OPEN_ACCESS`)** drops the token check for trusted single-operator LANs; it does not grant children control-plane APIs.
+
+### 6.5 Who can assign / write (as-built → broker target)
+
+#### As-built authority matrix
+
+| Action | Operator (token / open-access) | Coordinator (gated) | Any agent (gated) | Any agent (unleashed) |
+|---|---|---|---|---|
+| Create task via UI / API | Yes | No (no direct API; use plan or ask operator) | No | No |
+| Dispatch plan block → Board tasks | Yes (indirect: can paste, but normal path is agent plan) | **Yes** — `applyCoordinatorPlan` only when `chatTurn.agentId === room.coordinatorId` | **No** — plan block inert | **Yes** — any agent’s plan dispatches |
+| Assign read-only task (from plan) | Yes | Yes → `ready` (runs when assignee idle) | No (gated) | Yes → `ready` |
+| Assign workspace-write task (from plan) | Yes | Yes → `waiting` + write approval | No (gated) | Yes → `ready` + auto-approved write approval |
+| Approve write / command | Yes (Approvals drawer) | **No** — cannot approve own or others’ access | No | N/A (policy/unleashed auto-approves; still audited) |
+| Auto-approve writes | Configures `policy.autoApproveWrites`: `off` \| `verified-agents` \| `all-agents` | No | No | Unleashed forces allow for write/command (rate cap + allowlist off) |
+| Accept review | Yes / policy `autoAcceptReviews` | **No** | No | Same policy rules; unleashed does not auto-accept reviews by itself |
+| Assign roles / set Coordinator | Yes | No | No | No |
+| Flip room trust gated↔unleashed | Yes | No | No | No |
+| Pause room / set limits | Yes | No | No | No |
+| Self-identity card restyle | Yes (`POST /api/agents/:id/identity`) | Self only via `conclave-identity` block | Self only | Self only |
+| Run elevated CLI flags (`bypassPermissions`, `danger-full-access`, …) | Indirect: only when `room.trust === unleashed` **and** task is write | Same elevation rules if their write task runs | Same | Same |
+
+Sources of truth in tree: `applyCoordinatorPlan`, `createTask` path, `evaluateAutoApproval`, `POST /api/room/trust`, `promptForChat` / `coordinatorPlanLines`.
+
+#### What “verified-agents” means today vs after capability profiles
+
+| Mode | Today | Target after Phase 2 |
+|---|---|---|
+| `policy.autoApproveWrites === 'verified-agents'` | `agent.status === 'installed' && agent.connection === 'verified'` (any successful execution) | Prefer `capabilityProfile.capabilities['filesystem.write'].confidence === 'verified'` (and still installed); fall back to connection-only only if profiles missing |
+| Assignment UI | Free-text match on static capability strings | Soft block / warn when required keys missing or `failed`/`unsupported` (PRD US-012); hard block only if operator enables “strict fit” (open question) |
+| Role fitness | Cosmetic | Optional: require `repository.read` for implementer/reviewer assign; never invent soft skills as hard gates |
+
+#### Broker target for assign/write (Phase 3, control-plane)
+
+Agents never call mutating HTTP with the operator token. Instead:
+
+```text
+agent emits structured intent
+  → broker validates: actor role, room.trust, pause, one-writer risk, capability profile, policy
+  → single-use grant or rejection
+  → audit event
+  → existing task/approval machinery executes the outcome
+```
+
+Intent kinds relevant to assign/write (illustrative, not an API freeze):
+
+| Intent | Who may submit (target) | Broker checks |
+|---|---|---|
+| `task.create` | Operator always; Coordinator (gated); any agent (unleashed) | PLAN_TASK_CAP, agent exists, accessMode enum |
+| `task.assign` | Same as create | Assignee installed; soft/hard capability fit |
+| `task.request_write` | Same | Creates/updates write approval; never self-approves |
+| `approval.decide` | **Operator only** (or autopilot/unleashed policy evaluator — not the agent) | Token path or `evaluateAutoApproval` |
+| `room.trust.set` | **Operator only** | Token; no agent intent ever |
+| `role.set` / `coordinator.set` | **Operator only** | Token |
+| `capability.probe.request` | Operator; optional Coordinator for read-only probes | See §6.6 |
+
+**Non-goal:** agents approving their own write access, even as Coordinator, even when unleashed (unleashed auto-approve is **policy engine**, not agent self-grant).
+
+### 6.6 Verification hooks (lifecycle integration)
+
+“Hooks” are the **server-side points** where capability evidence is produced, consumed, or displayed. No product flip in this doc — these are the implementation seams.
+
+```
+detectAgents / boot
+    │
+    ├─► declaredCapabilities from adapters  (always; static)
+    │
+operator "Verify agents" OR cliVersion change OR TTL stale
+    │
+    ├─► queue probe executions (kind: 'probe')
+    │       ProcessManager: execution.started → output → finished
+    │       onProcessEvent: merge into capabilityProfile (not "any chat = write verified")
+    │       SSE: capability.probe.* / capability.profile.updated / mcp.inventory.updated
+    │
+createTask / applyCoordinatorPlan / UI assign
+    │
+    ├─► HOOK A — assignment fit: read capabilityProfile for required keys
+    │       warn or (strict) refuse assignee when filesystem.write needed but not verified
+    │
+evaluateAutoApproval (agent-write)
+    │
+    ├─► HOOK B — write auto-approve: verified-agents uses capability key, not mere connection
+    │
+build() / startTask
+    │
+    ├─► HOOK C — spawn profile: buildToolProfile(...) → adapter flags
+    │       accessMode + elevated + policy + profile notes
+    │
+execution.finished (agent / chat — non-probe)
+    │
+    ├─► HOOK D — connection health only (keep today's verified connection)
+    │       do NOT promote filesystem.write from a successful chat
+    │
+UI badges / agent rail
+    │
+    └─► HOOK E — render confidence labels; never green from declared alone
+```
+
+| Hook | File (target) | Trigger | Writes | Reads |
+|---|---|---|---|---|
+| **A — assignment fit** | `server.js` task create / plan apply; `public/app.js` assign UI | Task created or reassigned with `accessMode` | Soft: system notice; hard: error if strict | `capabilityProfile` required keys by accessMode |
+| **B — auto-approve** | `policy.js` `evaluateAutoApproval` | Pending write approval + policy/unleashed | Approval decision + audit | `filesystem.write` verified (gated); unleashed unchanged |
+| **C — spawn profile** | `tool-profile.js` + `adapters.js` `build` | `startTask` / chat run | Child argv/env flags only | accessMode, elevated, room.trust, policy, profile |
+| **D — connection** | `server.js` `onProcessEvent` | Non-probe `execution.finished` completed | `agent.connection` | exit code only |
+| **E — UI truth** | `public/app.js` | State SSE | — | profile confidence + notes |
+| **F — probe runner** | `server.js` + `process-manager.js` | Operator button / version change / optional Coordinator read-only request | probe executions + profile merge | adapter probe matrix §8 |
+| **G — MCP inventory** | `mcp-inventory.js` | Part of F or standalone | names-only list on profile | CLI `mcp list` where supported |
+
+**Hook rules:**
+
+1. Probes are executions (`kind: 'probe'`) so cancel-bleed, redaction, and `previewCommand` apply unchanged.
+2. Probe success for `conversation.stream` may set `connection: verified`; it must **not** set `filesystem.write: verified`.
+3. Write probes require operator opt-in or a dedicated canary dir (`.conclave/probes/`); default suite is detect + stream + MCP list + sandbox-ro.
+4. Broker intents that need a capability (`task.assign` with write) call Hook A before accepting the intent.
+5. Failure modes are explicit: `failed` / `stale` / `unsupported` — never silent fallback to static badge green.
 
 ---
 
@@ -451,6 +594,11 @@ Reuse `execution.*` for the underlying process. Probe executions use `previewCom
 2. **Write probes in real workspaces:** opt-in vs dedicated probe worktree. Recommendation: dedicated `.conclave/probes/` canary dir, never touch user files.  
 3. **Whether `verified-agents` autopilot requires `filesystem.write: verified`:** Recommendation: yes in gated rooms; unleashed unchanged.  
 4. **Codex MCP list currently includes remote servers** — should Conclave display them when auth is “Not logged in”? Recommendation: show name + `auth: required`, never pretend connected.
+5. **Assignment fit severity:** warn-only vs hard-block when write task targets an agent without `filesystem.write: verified`? Recommendation: warn-only in Phase 1–2; optional operator “strict capability fit” later.
+6. **May Coordinator request read-only probes?** Recommendation: yes (Hook F); write probes remain operator-only.
+7. **Unleashed + missing write capability:** should UI still warn that the CLI may not actually write (e.g. misconfigured agy)? Recommendation: yes — trust mode does not invent capability.
+8. **Broker intent transport:** parse fenced blocks in chat (like plan/identity) vs separate control channel? Recommendation: keep fenced blocks for Phase 3 MVP; dedicated channel only if volume/abuse becomes an issue.
+9. **Open-access LAN:** should probe-trigger and profile-mutation routes still require a local-only bind check beyond today’s open-access flag? Recommendation: reuse existing Host/Origin CSRF posture; do not invent a second auth system.
 
 ---
 
@@ -461,7 +609,12 @@ Reuse `execution.*` for the underlying process. Probe executions use `previewCom
 | What replaces static badges? | Structured capability profiles with declared/probed/verified/unsupported + real probes |
 | Where does Conclave broker? | Control-plane intents, policy, spawn profiles, audit, assignment gates |
 | Where does it delegate? | In-run FS/shell/MCP inside each CLI’s sandbox after spawn flags are set |
+| Who can assign (gated)? | Operator + designated Coordinator plan blocks; non-coordinator plans inert |
+| Who can assign (unleashed)? | Any agent’s plan dispatches; write auto-approved by policy engine, not agent self-grant |
+| Who can approve writes? | Operator always; autopilot/unleashed via `evaluateAutoApproval`; never the assignee agent |
+| Verification hooks? | A assign-fit · B auto-approve · C spawn profile · D connection-only · E UI · F probe runner · G MCP inventory (§6.6) |
 | Antigravity gap? | No MCP CLI; mark `mcp.*` unsupported; still probe plan/edit modes for honest write claims |
 | Payload safety? | Names-only MCP, preview commands, probe summaries, existing execution projection |
+| Runtime flip in this task? | **None** — markdown design contract only |
 
 This document is the implementation contract for follow-on tasks; it intentionally ships no runtime switch.

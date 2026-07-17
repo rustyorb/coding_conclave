@@ -13,6 +13,11 @@ export function clampText(value, max = 20_000) {
   return text.length > max ? `${text.slice(0, max)}\n…[truncated]` : text;
 }
 
+export function previewCommand(value, max = 200) {
+  const text = String(value ?? '');
+  return text.length > max ? `${text.slice(0, max)}… [${text.length} chars total]` : text;
+}
+
 export async function readJsonBody(request, limit = 1_000_000) {
   // Require a JSON content-type so a cross-origin "simple request" (text/plain,
   // which skips the CORS preflight) cannot smuggle a body into a mutating route.

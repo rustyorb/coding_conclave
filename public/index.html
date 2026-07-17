@@ -24,6 +24,7 @@
       <a href="#/board" data-route="board">Board <span class="nav-badge" id="navBoard">0</span></a>
       <a href="#/runs" data-route="runs">Runs <span class="nav-badge" id="navRuns">0</span></a>
       <a href="#/workspace" data-route="workspace">Workspace <span class="nav-badge" id="navWorkspace">0</span></a>
+      <a href="#/memory" data-route="memory">Memory <span class="nav-badge" id="navMemory">0</span></a>
     </nav>
     <div class="top-actions">
       <button class="button ghost" id="approvalsButton" aria-haspopup="true" aria-expanded="false">
@@ -129,6 +130,56 @@
         </div>
       </div>
     </section>
+
+    <!-- ============ MEMORY ============ -->
+    <section id="page-memory" class="page" aria-label="Room memory">
+      <aside class="panel memory-rail">
+        <div class="panel-title"><span>ROLLING SUMMARY</span><span class="nav-badge" id="summaryUpdated">fresh</span></div>
+        <div id="rollupContent" class="rollup-content">No summary generated yet.</div>
+        <div class="rail-footer">
+          <p>Derived navigation, not evidence. The rolling summary is rebuilt automatically from room history.</p>
+          <p id="memoryEngineStatus">SQLite prompt recall is off; agents use the bounded JSON transcript.</p>
+        </div>
+      </aside>
+      <div class="memory-main">
+        <div class="memory-toolbar">
+          <div class="memory-filters">
+            <input id="memorySearch" type="search" placeholder="Filter memories…" aria-label="Filter memories by text">
+            <select id="memoryKind" aria-label="Filter by kind">
+              <option value="">All kinds</option>
+              <option value="decision">Decision</option>
+              <option value="requirement">Requirement</option>
+              <option value="preference">Preference</option>
+              <option value="constraint">Constraint</option>
+              <option value="fact">Fact</option>
+              <option value="hypothesis">Hypothesis</option>
+              <option value="question">Question</option>
+              <option value="evidence">Evidence</option>
+              <option value="risk">Risk</option>
+              <option value="disagreement">Disagreement</option>
+              <option value="rejected-approach">Rejected approach</option>
+            </select>
+            <select id="memoryStatus" aria-label="Filter by status">
+              <option value="">All statuses</option>
+              <option value="proposed">Proposed</option>
+              <option value="observed">Observed</option>
+              <option value="verified">Verified</option>
+              <option value="accepted">Accepted</option>
+              <option value="rejected">Rejected</option>
+              <option value="disputed">Disputed</option>
+              <option value="superseded">Superseded</option>
+              <option value="stale">Stale</option>
+            </select>
+            <label class="check"><input type="checkbox" id="memoryPinnedOnly"> Pinned only</label>
+          </div>
+          <div class="memory-meta">
+            <span id="memoryCount">0 items</span>
+            <button class="button primary" id="newMemoryButton">+ Propose Memory</button>
+          </div>
+        </div>
+        <div id="memoryLedger" class="memory-ledger-list"></div>
+      </div>
+    </section>
   </main>
 
   <!-- Global approvals drawer -->
@@ -200,6 +251,81 @@
       <label>Absolute directory path<input name="path" placeholder="C:\path\to\project" required></label>
       <div class="notice warning"><strong>Scope changes immediately</strong><span>New agent runs and approved commands will use this directory.</span></div>
       <div class="dialog-actions"><button type="button" class="button ghost" data-close="workspaceDialog">Cancel</button><button class="button primary" type="submit">Open workspace</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="memoryDialog" class="dialog">
+    <form id="memoryForm" method="dialog">
+      <input type="hidden" name="id" id="memoryFormId">
+      <input type="hidden" name="version" id="memoryFormVersion">
+      <div class="dialog-head">
+        <div>
+          <span class="eyebrow" id="memoryDialogEyebrow">CURATE MEMORY</span>
+          <h2 id="memoryDialogTitle">Propose a memory</h2>
+        </div>
+        <button type="button" class="close-button" data-close="memoryDialog">×</button>
+      </div>
+
+      <div id="memorySourcePreview" class="notice" hidden>
+        <strong>Source message</strong>
+        <span id="memorySourcePreviewText"></span>
+      </div>
+
+      <div class="form-grid">
+        <label id="memoryFormKindLabel">Kind
+          <select name="kind" id="memoryFormKind" required>
+            <option value="decision" selected>Decision</option>
+            <option value="requirement">Requirement</option>
+            <option value="preference">Preference</option>
+            <option value="constraint">Constraint</option>
+            <option value="fact">Fact</option>
+            <option value="hypothesis">Hypothesis</option>
+            <option value="question">Question</option>
+            <option value="evidence">Evidence</option>
+            <option value="risk">Risk</option>
+            <option value="disagreement">Disagreement</option>
+            <option value="rejected-approach">Rejected approach</option>
+          </select>
+        </label>
+        <label class="check" style="margin-top: 2rem;">
+          <input type="checkbox" name="pinned" id="memoryFormPinned"> Prioritize when recall is enabled
+        </label>
+      </div>
+
+      <label>Title
+        <input name="title" id="memoryFormTitle" maxlength="160" placeholder="e.g. SQLite database migration target" required>
+      </label>
+
+      <label>Statement
+        <textarea name="statement" id="memoryFormStatement" rows="5" placeholder="Describe the memory, decision, or constraint..." required></textarea>
+      </label>
+
+      <div id="memorySourcesSection">
+        <label id="memoryFormSourcesLabel">Source Message
+          <select id="memoryFormSources" name="sourceMessageId">
+            <!-- Populated with recent room messages -->
+          </select>
+        </label>
+      </div>
+
+      <div id="memoryEditSourcesSection" hidden>
+        <div class="panel-title" style="margin-top: 1.5rem; margin-bottom: 0.5rem;"><span>PROVENANCE SOURCES</span></div>
+        <div id="memoryFormExistingSources" class="memory-form-sources-list"></div>
+
+        <div class="add-source-row" style="margin-top: 1rem; display: flex; gap: 0.5rem; align-items: flex-end;">
+          <label style="flex: 1; margin: 0;">Add another source message
+            <select id="memoryFormAddSourceSelect">
+              <!-- Populated with recent room messages -->
+            </select>
+          </label>
+          <button type="button" class="button primary" id="memoryFormAddSourceButton" style="height: 38px; margin-bottom: 3px;">Add</button>
+        </div>
+      </div>
+
+      <div class="dialog-actions">
+        <button type="button" class="button ghost" data-close="memoryDialog">Cancel</button>
+        <button class="button primary" type="submit" id="memorySubmit">Propose memory</button>
+      </div>
     </form>
   </dialog>
 

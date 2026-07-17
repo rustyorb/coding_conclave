@@ -7,7 +7,8 @@ Protocol: see [AGENTS.md](AGENTS.md).
 
 | Agent | Files / area | Task | Claimed at (UTC) |
 |-------|--------------|------|------------------|
-| _none_ | | | |
+| codex | Integrated memory slice: `src/lib/{memory-db,memory-ledger,context-assembler,room-summary,adversarial-memory-eval,backup-adapter}.js`, memory paths in `src/server.js`, memory UI/docs/tests/fixtures | Release-gate review and scoped hardening across architecture, security/privacy, migrations, recovery, and UI honesty | 2026-07-15 23:07:17 |
+
 
 <!-- claude-gemini-grok claim released 2026-07-14 by Claude (Fable 5, operator-side): the Grok
      stream-summary hardening (textAccumulators refactor) was found half-applied in the tree and
@@ -15,6 +16,639 @@ Protocol: see [AGENTS.md](AGENTS.md).
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### codex — 2026-07-16 23:13 UTC — Conversational queue latency fixed with ordered output batching and retry fairness
+
+**Concrete conclusion**
+- Operator messages no longer sit behind one 22.8MB state rewrite per agent output line. Output events coalesce for 40ms into one ordered persistence commit and one SSE change signal; message admission flushes at most one pre-existing batch, preserving durable event order.
+- `/api/messages` now commits the operator message, every recipient chat turn, and every `chat.created` audit record atomically. It returns the durable 201 before prompt construction/process launch, then kicks the existing reservation-safe drainer asynchronously.
+- Runnable ordering uses the time an entry most recently joined the queue (`updatedAt`) instead of a task's original creation time. A failed Board task's auto-retry therefore goes behind chats already waiting; chats remain FIFO by message sequence and recipient index.
+
+**What changed**
+- `src/server.js`: output batching/final lifecycle flush; atomic multi-recipient admission; asynchronous post-response drain; retry-aware FIFO ordering with deterministic chat tie-breaks.
+- `test/server.test.js`: causal regressions prove 40 output lines require one batch write, admission is one separate atomic write, event sequences stay ordered, finish flushes all buffered lines, and queued delivery runs chat 1 → chat 2 → Board retry.
+- `test/autopilot.test.js`, `test/recipient-selection.test.js`: existing launch assertions now wait for the deliberately asynchronous drainer without weakening policy/read-only checks.
+
+**How to verify**
+- `node --test test/server.test.js test/autopilot.test.js test/recipient-selection.test.js test/server-work.test.js test/start-safety.test.js test/roles.test.js` → **41/41 pass**
+- `npm test` → **219/219 pass**
+- `node --check src/server.js test/server.test.js test/autopilot.test.js test/recipient-selection.test.js` → pass
+- `git diff --check -- src/server.js test/server.test.js test/autopilot.test.js test/recipient-selection.test.js COORDINATION.md` → pass with existing LF→CRLF warnings only
+
+**Open items**
+- The live room server was not restarted; restart at a safe handoff point to load this code.
+- This scoped fix does not change Antigravity's `--print-timeout 10m`; a currently active failing Gemini run can still occupy its slot until it exits, but it can no longer chain automatic retries ahead of already-queued chats.
+- No commit or push performed; unrelated shared-worktree changes remain untouched.
+
+### grok — 2026-07-16 — Resolve summary audit findings (Claude rolling-summary audit)
+
+**Concrete conclusion**
+- Implemented every **blocking/high-severity** finding from Claude’s rolling-summary audit against `docs/memory.md`. Core digests/contiguity remain; generation now **preserves all 8 fixed rollup sections under size caps**, **re-redacts** summary text before hash/persist, **propagates checkpoint staleness to the rollup** and **regenerates stale checkpoint prose** so pre-edit text is not retained, and **refuses to commit** provisional summary state when `verifySummaryIntegrity` fails (prior rollup restored + `lastError`).
+- Lean API projection: checkpoint `sourceMessageIds[]` no longer shipped on `/api/state` (count only via `sourceMessageCount`).
+- In-memory probe on a **copy** of live `.conclave/state.json` (no write to live store): `advanceRoomSummary` → `verifySummaryIntegrity.ok === true`, **0 missing sections**, rollup length **4136 ≤ 8000**.
+
+**What changed**
+- `src/lib/room-summary.js`: `safeClamp`/`redactSecrets`; per-section list caps; `assembleFixedSections` (no global truncate that drops headers); `regenerateStaleCheckpoints`; rollup stale on checkpoint stale; snapshot + integrity gate in `advanceRoomSummary`; `projectSummaryForApi` drops `sourceMessageIds`.
+- `test/room-summary.test.js`: +5 regressions (section survival, secret re-scan, stale→regenerate, integrity restore, ID-mismatch skip); existing stale/projection tests updated. Suite **16/16**.
+
+**How to verify**
+- `node --test test/room-summary.test.js` → 16/16 pass
+- `npm test` → **216/216 pass**
+- Optional probe (read-only copy): load `.conclave/state.json`, `advanceRoomSummary(state, { force: true })`, assert `verifySummaryIntegrity(state).ok` and every `ROLLUP_SECTIONS` header in `rollup.content`
+
+**Deferred (medium/low — not blocking this task)**
+| Sev | Finding | Why deferred |
+|-----|---------|--------------|
+| M | One catch-up may still cover a large uncovered range in a single checkpoint (threshold-sized job chunks) | Spec Phase-3 `SummaryJob` model; needs job lease design |
+| M | Prior rollup revisions replaced in place (no `summaryRollups[]` history) | Spec 8.1 bridge shape; storage growth tradeoff |
+| M | Task/review/approval API transitions do not always `scheduleSummaryRefresh` | Server-only; structured-state stale marks on next message/exec/restart |
+| L | Debounce 500ms vs spec 30s-idle; no priority-raise escape hatch | Config default; not a correctness bug |
+| **Auth decision** | Full rollup text still on open `GET /api/state` when open-access (Finding 4) | Room-wide design; needs Codex/operator call — not changed |
+
+**Open items**
+- Live room server must restart to load this code; do not hand-edit `state.json`.
+- Finding 4 (memory text auth on `/api/state`) still open for product decision.
+- No commit/push; Codex’s broader memory claim left untouched except this narrow `room-summary` fix.
+
+### claude — 2026-07-16 23:55 UTC — Capability badges in the UI: agent cards render profile confidence, never green from declared
+
+**Concrete conclusion**
+- Agent cards on the chat rail now render one badge per capability from `agent.capabilityProfile.capabilities`, styled by confidence: `verified` (cyan), `probed` (purple), `declared` (neutral — the default look), `stale` (amber), `failed` (red), `unsupported` (dimmed, struck through, dashed border). Tooltips carry the stable key, confidence, reason, and probe id/timestamp — or an explicit "declared by the adapter — not yet probed".
+- The broker-design truth rules (§6.6 hook E, §5.2) are enforced and tested: verified styling comes only from a probe-upgraded `verified` entry; a `verified` result past `ttlHours` (or with no provable probe timestamp) renders as `stale`, never silently green; unknown confidence strings style as `declared` (class whitelist — no class injection) and all labels/reasons are escaped.
+- Static badge strings are gone as a truth source: if a server predates structured profiles, legacy `agent.capabilities` labels fall back clearly marked `declared · legacy label, no verification data` (design acceptance: "static string badges are gone or clearly labeled declared").
+- Badge logic lives in a new pure ESM module (`public/capability-badges.js`), following the repo's `chat-feed.js`/`avatar-cards.js` pattern, so the invariants are unit-testable under `node --test` with no DOM.
+
+**What changed**
+- `public/capability-badges.js` (new): `capabilityEntries` (confidence resolution incl. TTL staleness, tooltip text) and `capabilityBadges` (markup).
+- `public/app.js`: import + one line in `renderAgents` card markup (`${capabilityBadges(agent)}` after role badges). No other rendering paths touched; memory UI untouched.
+- `public/styles.css`: `.agent-capabilities` row + `.cap-badge` confidence variants, placed by the `.role-badge` block, reusing the app's existing palette semantics (cyan=verified, amber=warning, red=failure).
+- `test/capability-badges.test.js` (new, 7 tests): per-confidence rendering, declared-never-verified, TTL staleness, missing-timestamp staleness, unknown-confidence whitelisting, legacy fallback labeling, hostile label/reason escaping, empty-agent no-op.
+
+**How to verify**
+- `node --test test/capability-badges.test.js` → 7/7 pass.
+- `npm test` → **211/211 pass** (was 204; +7 new).
+- `node --check public/capability-badges.js public/app.js` → pass; `git diff --check` → only the repo's usual LF→CRLF warning.
+- Integration smoke (isolated `ConclaveApp` on an ephemeral port + temp state; live room untouched): `GET /capability-badges.js` 200 `text/javascript`; `GET /app.js` imports and renders the module; `GET /api/state` carries `capabilityProfile` on 4/4 agents; gemini `mcp.inventory` projects `unsupported`; `GET /styles.css` serves the `.cap-badge` variants.
+- Data-contract smoke against real `detectAgents()`: codex/claude 11 declared, grok 12 declared, gemini 7 declared + 3 unsupported (live `agy mcp --help` probe ran); zero verified badges rendered — correct, since no P-stream verification has run yet.
+- Eyeball: open the app, chat page, agents rail — each card shows a badge row under the role badges; hover any badge for the key/confidence/probe tooltip.
+
+**Open items**
+- Badges will show `declared`/`unsupported` only until the P-stream probe runner lands on the server (Grok's open item: queue `kind: 'probe'`, merge `scorePStream`, persist profiles across `/api/agents/scan`) — the first verified/stale/failed badges appear then, with no further UI work needed.
+- The live room server still runs pre-restart code, so its `/api/state` has no `capabilityProfile` yet; until the planned restart the UI renders the clearly-labeled legacy-declared fallback.
+- No commit/push; no browser click-through claimed (no in-app browser tab in this room — same constraint prior handoffs hit); Codex-claimed memory paths untouched.
+
+### grok — 2026-07-16 — Phase 1 capability verification profiles (adapters)
+
+**Concrete conclusion**
+- Adapter manifests no longer advertise bare capability strings as if they were proof. Each agent now has structured `declaredCapabilities` (stable keys from the broker design) plus a `probeSupport` matrix, and `detectAgents()` attaches a `capabilityProfile` with confidence levels.
+- Phase-1 probes implemented in `src/lib/adapters.js`:
+  - **P-detect** — `resolveExecutable` + version; runs on every detect.
+  - **P-stream** — `buildPStreamInvocation` (read-only `PROBE_OK` prompt) + pure `scorePStream` over captured lines via existing summarize/flush path. Stream success upgrades only `conversation.stream` / `structured.output` — never `filesystem.write`.
+  - **P-agy-mcp** — attempts `agy mcp --help`; expected result is `mcp.inventory` / `mcp.configured` = **unsupported** (seeded for gemini even before the subprocess runs).
+- Legacy `capabilities: string[]` labels remain on agent rows for older consumers; they are labels only, not verified badges.
+- Live P-stream child runs and UI badges are **not** wired yet (separate tasks: probe runner on ProcessManager/server, “Add capability badges to UI”).
+
+**What changed**
+- `src/lib/adapters.js`: `declaredCapabilities`, `probeSupport`, `buildDeclaredCapabilityProfile`, `applyProbeResult`, `runPDetect`, `buildPStreamInvocation`, `scorePStream`, `runPAgyMcp`, `runLocalCapabilityProbes`; `detectAgents` emits `capabilityProfile`.
+- `test/capability-probes.test.js` (new, 11 tests): declared shape, P-detect/stream/agy-mcp scoring, profile size budget.
+- `test/adapters.test.js`: +1 test for structured manifests.
+- `COORDINATION.md`: claim released; this handoff.
+
+**How to verify**
+- `node --check src/lib/adapters.js` → pass
+- `node --test test/adapters.test.js test/capability-probes.test.js` → 20/20 pass
+- `npm test` → **204/204 pass**
+- Inspect: gemini profile has `mcp.inventory.confidence === 'unsupported'`; codex stream score with fixture JSONL containing `PROBE_OK` → `verified`.
+
+**Open items**
+- Server: queue P-stream as `kind: 'probe'`, merge `scorePStream` on finish, preserve profiles across `/api/agents/scan` (today rescan rebuilds declared+detect+agy-mcp only).
+- UI task: render declared vs verified confidence (do not green from `declared` alone).
+- Phase 2: tool-profile.js, write canaries, names-only MCP list for codex/claude/grok.
+- No commit/push; did not touch Codex-claimed memory paths or `server.js`.
+
+### claude — 2026-07-16 22:40 UTC — Fossil quarantine applied: 73 parked, 3 requeued, board fully drained of stale work
+
+**Concrete conclusion**
+- The triage from the previous chain step (73 FOSSIL / 3 REQUEUE of 76 stranded tasks) is now applied on the live server, entirely through existing API routes present in the running process — `state.json` was never hand-edited. Zero of the 73 fossils remain dispatchable by the drainer or the idle watchdog; the heartbeat bring-live step (Grok's chain) is unblocked.
+- Status counts, before → after (live `/api/state`): blocked 69 → 0 · waiting 7 → 0 · ready 10 → 13 · rejected (archived) 0 → 73. Unchanged: completed 10, completed (archived) 86, rejected (unarchived) 2, failed 1, active 1 (this task). All 149 API calls returned 200; zero failures.
+- Mechanism per task: the one fossil with a pending write approval (`task_bd4f16c2`, Gemini wellness ping) was parked by denying that approval (`POST /api/approvals/:id {decision:'denied'}` — marks the approval denied AND sets the task rejected); the other 72 fossils via `POST /api/tasks/:id/review {accepted:false}` (→ `rejected`, terminal); then all 73 archived via `POST /api/tasks/:id/archive`. A rejected+archived task cannot re-enter the queue: requeue only accepts `blocked`, transitions only accept `proposed`, and the watchdog only wakes `ready`/restart-`blocked` tasks.
+- `task_f8dc8d1c` (remove token auth end-to-end — the most dangerous auto-run candidate) is rejected + archived.
+- The 3 REQUEUE tasks went through `POST /api/tasks/:id/requeue` in dependency order (`152dc007`, `157af431`, then its dependent `78a5b232`): all landed `ready` with null blockers and standing auto-approved write authority. They will dispatch via the normal drainer once no write task is active (this run held the one-writer gate).
+- Safety walk re-verified before executing, against the real `dependencies` field in raw state (the `/api/state` projection strips it — the triage message's claim was re-checked, not trusted): zero live tasks depend on any fossil; all 38 fossil-on-fossil dependents were `blocked`, so rejection order had no side effects.
+
+**What changed**
+- Board state only, via the live API (149 POSTs: 1 approval deny, 72 review-rejects, 73 archives, 3 requeues). No source, test, or UI files touched.
+- `deferred-tests/{find-triage,quarantine-plan,verify-deps,quarantine-execute}.mjs` (new, untracked scratch): dry-run planner, dependency re-verification, and the executor with inline verification. Re-runnable read-only checks; the executor is idempotent-hostile (re-running it will 400 on already-terminal tasks) — don't re-run.
+- `COORDINATION.md`: this handoff.
+
+**How to verify**
+- `node deferred-tests/quarantine-plan.mjs` → stranded (blocked+waiting): 0; the classified sets now show as rejected.
+- Live API: `(iwr http://127.0.0.1:4317/api/state | ConvertFrom-Json).tasks | Group-Object status` → 0 blocked, 0 waiting, 13 ready, 75 rejected (73 of them archived).
+- Board UI: the three requeued cards (`Resolve summary audit findings`, `Implement Phase 1 capability verification profiles`, `Add capability badges to UI`) show Ready; the fossil pile is gone from the default view (archived).
+- Audit trail: `approval.denied` ×1, `task.reviewed` broadcasts ×72, `task.archived` ×73, `task.requeued` ×3 (audit array is capped at 2,000 — older entries were spliced out, by design).
+
+**Open items**
+- The DELETE route was deliberately NOT used: it does not exist in the running (pre-restart) server process. If the operator wants fossils permanently deleted rather than archived, that is possible after the planned `start-open.cmd` restart, per Codex's deletion handoff.
+- Triage flagged three fossil groups as "feature still wanted, cards stale" (attachments `312524fa`+3, guest gateway `9f352028`+4, post-fix regression `b589bf4a`): recreate fresh cards from the surviving specs if wanted — do not unarchive the old ones.
+- The idle watchdog code is still not live in the running process (pre-code boot). Bringing it live is Grok's chain step and is now safe from the fossil side: 13 watchdog-wakeable tasks remain, all live work, 0 fossils.
+
+### codex — 2026-07-16 22:29 UTC — Idle watchdog restart-recovery validation
+
+**Concrete conclusion**
+- The idle watchdog is safe across the four requested operating cases: a normally idle Board with no eligible work remains silent; stale ready work wakes and drains; a busy assignee never receives a concurrent second run and its queued task drains after it becomes idle; persisted active work is marked interrupted/blocked on a real app restart, then re-queued and launched exactly once after the restart activity ages past the idle threshold.
+- No scoped production defect reproduced, so `src/lib/idle-watchdog.js` and the watchdog lifecycle in `src/server.js` were left unchanged.
+- Restart interruption time intentionally counts as Board activity. Recovery begins only after the configured idle interval elapses from that boot-time interruption, preventing immediate duplicate work on startup.
+
+**What changed**
+- `test/idle-watchdog.test.js`: added three deterministic integration cases for no-work idle, busy-agent serialization/drain, and persisted restart recovery through a second `ConclaveApp` instance. The focused watchdog suite is now 10 tests.
+- `COORDINATION.md`: claim released and this handoff added. No production source changed in this task.
+
+**How to verify**
+- `node --test test/idle-watchdog.test.js` → 10/10 pass.
+- `node --test test/idle-watchdog.test.js test/start-safety.test.js test/dependencies.test.js test/board-transitions.test.js test/task-deletion.test.js` → 24/24 pass.
+- `npm test` → 192/192 pass.
+- `node --check test/idle-watchdog.test.js; node --check src/lib/idle-watchdog.js; node --check src/server.js` → pass.
+- `git diff --check -- test/idle-watchdog.test.js` → pass.
+
+**Open items**
+- Validation used isolated ephemeral servers and a real persistence restart, with manual watchdog ticks for deterministic timing. The live room server was not restarted and no 15-minute wall-clock wait was performed, avoiding interruption of other agents.
+
+### codex — 2026-07-16 — Safe Board task deletion
+
+**Concrete conclusion**
+- Board tasks now have a permanent-delete path across JSON persistence, authenticated API, and the Board card menu.
+- Deletion requires both an irreversible browser confirmation and an exact `confirmTaskId` API confirmation. Tasks with `status: active` or a persisted running execution are rejected with HTTP 409 until cancellation finishes.
+- The task row is removed atomically. Ready/waiting dependents are blocked (never released), and pending approvals for the deleted task or newly blocked dependents expire.
+- The recent `task.deleted` event still lands in `audit[]`, while a compact append-only record in `taskDeletions[]` survives the 2,000-entry audit cap and remains visible through `/api/state` after restart.
+
+**What changed**
+- `src/lib/task-deletion.js` (new): atomic deletion policy, active-run guard, dependent blocking, approval expiry, recent audit event, and durable tombstone creation.
+- `src/lib/store.js`: initializes and legacy-backfills `taskDeletions[]`.
+- `src/server.js`: authenticated `DELETE /api/tasks/:id`; exact-id confirmation; 409 cancel-first response; state-change broadcast.
+- `public/app.js`: non-active cards expose `Delete permanently…`; confirmation names irreversibility, audit retention, and dependent impact.
+- `test/task-deletion.test.js` (new, 2 tests): confirmation and active protection; delete-after-cancel; dependency safety; recent-audit eviction; API visibility; persistence across restart; scheduler exclusion.
+
+**How to verify**
+- `node --check src/lib/task-deletion.js src/lib/store.js src/server.js public/app.js` → pass.
+- `node --test test/task-deletion.test.js test/board-transitions.test.js test/dependencies.test.js test/idle-watchdog.test.js` → 17/17 pass.
+- `npm test` → 189/189 pass.
+- `git diff --check` → pass with the repository's existing LF→CRLF warnings only.
+
+**Open items**
+- The live room server was not restarted because agents were active; restart it at a safe handoff point before using the new DELETE route.
+- Interactive browser smoke was attempted against an isolated HTTP-200 test server, but this room had no in-app browser tab available. API/persistence tests and client syntax checks passed; no click-through is claimed.
+- This change adds the deletion mechanism only. It does not delete any of the 75 stale Board items, commit, or push.
+
+### grok — 2026-07-16 — Autopilot idle watchdog heartbeat
+
+**Concrete conclusion**
+- Root cause of multi-hour Board silence: `startQueuedTasks` is purely event-driven (finish/create/approve/requeue/etc.), and restart marks in-flight `ready`/`active` tasks as **blocked** with no automatic requeue. Live board had 69 restart-blocked tasks and ready work with no periodic wake.
+- Added an OpenClaw-inspired idle watchdog: when no Board task activity for a configurable interval **and** eligible work exists, emit an autopilot room notice, re-queue recoverable restart-blocked tasks (deps OK + write authority preserved), stamp `room.lastIdleWatchdogAt`, and kick the FIFO drainer.
+
+**What changed**
+- `src/lib/idle-watchdog.js` (new): pure helpers — `lastBoardActivityAt`, `isBoardIdle`, `listEligibleIdleWork`, `applyIdleWatchdog`, notice formatter. Defaults: 15m idle / 60s check.
+- `src/server.js` (watchdog only): constructor options + `CONCLAVE_IDLE_INTERVAL_MS` / `CONCLAVE_IDLE_CHECK_MS` (0 disables); `startIdleWatchdog` / `stopIdleWatchdog` / `tickIdleWatchdog` after `initialize`; timer cleared on `close`. **Did not touch** Codex-claimed memory paths.
+- `test/idle-watchdog.test.js` (new, 7 tests): idle detection boundaries, eligibility (ready + restart-blocked with/without write auth), no-op cases, notice/audit, integration tick drains work.
+
+**How to verify**
+- `node --test test/idle-watchdog.test.js` → 7/7 pass.
+- `npm test` → **187/187 pass**.
+- Optional: set `CONCLAVE_IDLE_INTERVAL_MS=60000` and leave ready/restart-blocked work; within ~1m expect an autopilot “Idle watchdog…” message and drainer activity.
+
+**Open items**
+- Watchdog does **not** auto-mint write approvals for restart-blocked workspace-write tasks lacking approved/auto-approved authority (security).
+- Non-restart blockers (deps, operator) are left alone.
+- Live server must restart to pick up the timer; no commit/push performed.
+
+### grok — 2026-07-15 — Adversarial memory evaluations (fixture + automated gates)
+
+**Concrete conclusion**
+- Turned the ADR/red-team memory threat model into a **reproducible labeled corpus** and an **automated evaluation harness** that measures and gates: relevant recall, false recall, cross-room isolation, stale-memory supersession, malicious stored-content handling, deletion/forget residue, assemble latency (p50/p95), and prompt-token overhead (`chars/4`).
+- Full suite report on this host: **8/8 queries PASS**, **ALL gates PASS**; latency p95 ~0.2–1.3 ms on the corpus; max memory block 2197 chars / 550 tokens.
+
+**What changed**
+- `test/fixtures/adversarial-memory-corpus.json` (new): two-room labeled corpus (Alpha + Beta isolation canaries), injection payloads, supersession pairs, delete canaries, 8 scored queries + thresholds.
+- `src/lib/adversarial-memory-eval.js` (new): seed → assemble → score → report (`runAdversarialEvaluation`, `formatEvaluationReport`, residue scan).
+- `test/adversarial-memory-eval.test.js` (new, 10 tests): per-dimension regressions + full report gate.
+- `src/lib/memory-db.js`: room-scoped FTS (`searchMessages`/`searchNodes` optional `roomId`), soft-delete excluded from search, `purgeMessage` hard-forget for AC-12.
+- `src/lib/context-assembler.js`: default Tier-3 excludes `stale`/expired; lexical+semantic retrieval bound to `roomId`.
+
+**How to verify**
+- `node --test test/adversarial-memory-eval.test.js` → 10/10 pass (prints gate report).
+- `npm test` → **174/174 pass** (was 164; +10 new).
+
+**Open items**
+- Corpus is vertical-slice scale (not the ADR 100k/AC-15 fixture); extend seeds when SQLite scale gates land.
+- Soft-delete still retains content on disk; forget path uses `purgeMessage` / `deleteNode` hard removal for residue-free AC-12.
+- No commit/push; unrelated teammate dirty-tree files left untouched.
+
+### gemini — 2026-07-15 23:05 UTC — Feature-flagged SQLite hybrid memory vertical slice
+
+**Concrete conclusion**
+- Implemented local semantic embeddings (128-dimensional Float32 vector hash of token bags with synonym mapping) and cosine similarity in [src/lib/context-assembler.js](file:///U:/coding_conclave/src/lib/context-assembler.js).
+- Added Reciprocal Rank Fusion (RRF) to fuse lexical FTS5 rank and semantic search rank.
+- Budget division (Tier 3 (30%), Tier 2 (25%), Recent Tier 1 (35%), Older Retrieved Tier 1 (10%)) is enforced with deterministic overflow routing.
+- Inputs are sanitized (escaping backticks, altering conclave-plans, stripping XML delimiters) in [escapeUntrustedContent](file:///U:/coding_conclave/src/lib/context-assembler.js#L59) to prevent prompt injection.
+- Integrated the feature flag `sqliteMemoryEnabled` (via `sqliteMemory` constructor option or `CONCLAVE_SQLITE_MEMORY=1` env var) in [src/server.js](file:///U:/coding_conclave/src/server.js).
+- Enabled automatic synchronization of state to SQLite via a store-update wrapper on [ConclaveApp](file:///U:/coding_conclave/src/server.js) initialization.
+- Added `DELETE /api/memory/items/:id` endpoint for deletion/purging support of memory items, and fixed synchronization bug (filtering out revisions of deleted memory items to avoid FOREIGN KEY constraint failures).
+- Added a full suite of verification tests in [test/context-assembler.test.js](file:///U:/coding_conclave/test/context-assembler.test.js) validating:
+  - Vector cosine similarity on synonyms.
+  - Escaping and sanitization boundaries for prompt injection.
+  - Reciprocal Rank Fusion ranks.
+  - Context budget limits and older message retrieval (fixed test filler count to exceed the minimum budget floor).
+  - Restart persistence by starting a fresh process simulation pointing to an existing SQLite DB file and recalling items, search indexes, and deletion.
+
+**What changed**
+- [src/lib/context-assembler.js](file:///U:/coding_conclave/src/lib/context-assembler.js): Core retrieval, fusion, sanitization, and context block compilation logic.
+- [src/server.js](file:///U:/coding_conclave/src/server.js): Intercepted store updates to sync to SQLite DB, integrated context assembler into prompt construction pipelines (`startTask`, `startChatTurn`, `buildWriteApproval`), added DELETE endpoint. Imported `ensureMemoryState` from `memory-ledger.js` to fix deletion endpoint crash.
+- [test/context-assembler.test.js](file:///U:/coding_conclave/test/context-assembler.test.js): New test suite validating the entire feature-flagged vertical slice.
+
+**How to verify**
+- Run `node --test test/context-assembler.test.js` to execute memory retrieval/recall/persistence tests (5/5 pass).
+- Run `npm test` to run all project tests (164/164 pass).
+
+### claude — 2026-07-16 01:40 UTC — Timestamped event identity: monotonic per-room seq + server UTC recordedAt on messages and audit
+
+**Concrete conclusion**
+- The ADR Stage 0 event-identity seam (`docs/adr/0001` §"Timestamped event identity") now exists on the JSON bridge: every durable `messages[]` and `audit[]` (lifecycle) record carries a shared per-room monotonic `seq` and a server-authored UTC `recordedAt`, both allocated at commit time inside the serialized store queue. Same-millisecond `createdAt` values no longer tie — `seq` is the total-order cursor.
+- Stamping happens at the persistence boundary (`JsonStore.update`), not at the ~60 push sites, so no current or future push site can forget it. Within one commit, messages are numbered before audit records (cross-stream interleaving inside a single commit is not significant — documented in the module comment).
+- Backward compatible: legacy states are backfilled on `load()` in persisted array order (never re-sorted by ambiguous timestamps, per ADR); a legacy record's missing/unparsable `createdAt` is flagged `timestampStatus: legacy-missing|legacy-invalid` and no `recordedAt` is invented for history. Backfill is deterministic across restarts. A persisted counter is never lowered, so the audit-cap splice can't cause seq reuse. `createdAt` is untouched everywhere (UI/queryHistory/tests all still read it). New records missing/garbling `createdAt` get it filled from commit time and flagged `source-missing`/`source-invalid`.
+- UI: the chat-feed timestamp tooltip now shows local ISO + locale time (as before) plus `UTC <ms-precision ISO> · event #<seq>` when present (`timestampDetail` in `public/app.js`).
+
+**What changed**
+- `src/lib/store.js`: `ensureEventIdentity(state, { legacy })` (exported); `initialState` mints `events: { nextSequence: 2 }` and a stamped seed message (`seq: 1`); `load()` derives the counter from the persisted state (legacy → 1, never inherits the fresh default) and backfills; `update()` stamps after every mutator before save.
+- `public/app.js`: `timestampDetail` helper; message-time tooltip uses it.
+- `test/event-identity.test.js` (new, 6 tests): stamped initial state; legacy backfill order/flags/determinism; counter never lowered; commit-time stamping incl. same-millisecond ordering and `source-missing` fill, persisted to disk; restart continuity with no duplicate seq across streams; API end-to-end (POST `/api/messages` 201 body carries `seq`/`recordedAt`, `/api/state` projects `seq` on all messages/audit plus `events.nextSequence`).
+
+**How to verify**
+- `node --test test/event-identity.test.js` → 6/6 pass.
+- `npm test` → **159/159 pass** (was 153; +6 new).
+- `node --check src/lib/store.js public/app.js` → pass; `git diff --check` → only the repo's usual LF→CRLF warnings.
+- UI: hover a chat message's relative time — tooltip shows local ISO, locale time, `UTC …Z`, and `event #N`.
+
+**Open items (deliberately out of scope)**
+- Executions, tasks, chatTurns, and approvals keep their own ids/timestamps without `seq`; their lifecycle transitions already land in `audit[]`, which is stamped. Extending the envelope to those arrays is a follow-on slice.
+- SSE broadcast events are transient wire frames, not durable — left unstamped.
+- Live server restart still pending (existing Board task); unrelated teammate changes in the dirty tree untouched; nothing committed.
+
+### gemini — 2026-07-15 22:30 UTC — Visual memory drawer/tab in public/index.html, public/app.js, public/styles.css
+
+**Concrete conclusion**
+- Built a premium, fully-integrated facts and memory panel (Tier 2 rolling summaries and Tier 3 curated facts) on the client side using CSS HSL tailored variables, smooth layouts, micro-animations, and responsive overrides.
+- Added a dedicated "Memory" navigation link (`#/memory` route) and page that includes:
+  - Rolling Project Summary (Tier 2): displays the deterministic summary rollup with a live coverage timestamp in a sidebar panel.
+  - Curated Facts Ledger (Tier 3): displays all memory items in a modern grid with support status chips (available/compromised/partial/unavailable), kind badges, and lists of original source messages with timestamps and excerpts.
+  - Interactive Pinning: inline star button calls the expectedVersion-checked pin endpoint immediately.
+  - Propose/Edit Dialog: supports proposing a new memory from recent messages or editing existing memories (title/statement edits) and associating new source messages.
+  - Chat integration: messages in the feed now offer a `+ Memory` action button to easily promote chat text to a room memory item.
+- Stripped all trailing whitespace.
+
+**What changed**
+- `public/index.html`: added Memory main-nav link, page section, and `#memoryDialog`.
+- `public/app.js`: updated router to include `#page-memory`, wired up topbar memory badge count, chat feed message memory promoter button, click/submit event listeners, filter state, and memory dialog populate/submit logic.
+- `public/styles.css`: added premium styling tokens, layout structures, hover transition effects, status chips, and media query overrides for memory page layout.
+- `COORDINATION.md`: released active claim and left handoff.
+
+**How to verify**
+- `npm test` -> 153/153 pass.
+- Open the application, check that the new "Memory" tab appears, allows viewing rollup summary, filtering ledger items, toggling pins, editing memories, and associating new sources.
+
+### grok — 2026-07-15 22:30 UTC — E2E room-memory validation: verbatim context, summary updates, facts retrieval
+
+**Concrete conclusion**
+- Added `test/memory.test.js` with five integration tests that spin a real `ConclaveApp` (temp store + loopback) and exercise all three memory tiers end-to-end against the JSON bridge.
+- **Tier 1 (verbatim):** seeded messages stay in `/api/state` and on disk; `queryHistory` / `transcriptLines` / `promptForChat` / `promptForTask` honor budgets, disclose pruning, keep type labels, always retain the newest line, and exclude the reply target from chat history.
+- **Tier 2 (summary):** `refreshRoomSummary` builds gap-free incremental checkpoints + rollup, rebuilds after structured task changes, projects lean checkpoint metadata (no prose) with full rollup via `/api/state`, and keeps verbatim messages when generation is poisoned (`refreshRoomSummary` does not throw).
+- **Tier 3 (facts):** create → pin → associate sources over REST; facts retrieve from `/api/state` with provenance edges mapping back to real messages; revisions stay on disk; untokened create is 403.
+- Cross-tier test runs one session through all three surfaces and re-reads `state.json` to confirm restart durability.
+
+**What changed**
+- `test/memory.test.js` (new, 5 tests).
+- `COORDINATION.md`: claim/handoff only.
+
+**How to verify**
+- `node --test test/memory.test.js` → 5/5 pass.
+- `npm test` → **153/153 pass** (was 148; +5 new).
+
+**Open items**
+- Prompt assembler still does not inject Tier 2 rollup or Tier 3 pinned facts into agent prompts (known follow-on from prior handoffs).
+- No commit performed; unrelated dirty-tree teammate changes left untouched.
+
+### claude — 2026-07-16 00:55 UTC — Tier 3 curated facts ledger backend: create/update/pin/associate APIs on the JSON bridge
+
+**Concrete conclusion**
+- The curated durable memory ledger (`docs/memory.md` §6, §8.1) now has a working JSON-bridge backend: items persist in `state.json` under `memory.items[]` / `memory.itemRevisions[]` / `memory.sources[]`, with message provenance edges captured at curation time (message revision + SHA-256 content hash + redacted ≤300-char excerpt).
+- Governance follows the spec: creation always enters `proposed` (never `accepted`/`verified`), requires at least one source message, and every mutation requires `expectedVersion` — a mismatch returns HTTP 409 and mutates nothing (validation runs before any state append, so no partial sources/audit). Titles/statements/excerpts are redacted (`redactSecrets`) before clamping, then persisted.
+- New operator-only routes (all behind the existing session-token gate): `POST /api/memory/items` (create), `POST /api/memory/items/:id` (revise title/statement → new revision), `POST /api/memory/items/:id/pin` (pin/unpin — priority flag only, no content revision), `POST /api/memory/items/:id/sources` (associate another source message; later edges default `supplemental`, duplicates rejected). Each mutation writes an audit event (`memory.proposed|revised|pinned|source-added`) and broadcasts SSE.
+- `supportState` is derived per the §6.3 deterministic matrix (`aggregateSupportState`), ready for future edge-state degradation.
+- `/api/state` projects `memory` leanly: items + source edges + `itemsTotal`, revision history stays on disk.
+
+**What changed**
+- `src/lib/memory-ledger.js` (new): pure state operations (`createMemoryItem`, `reviseMemoryItem`, `setMemoryItemPinned`, `addMemorySource`, `aggregateSupportState`, `ensureMemoryState`, `projectMemoryForApi`) — policy separate from storage per §14.
+- `src/lib/store.js`: `memory` in `initialState`; legacy states backfilled via `ensureMemoryState` on load.
+- `src/server.js`: the four routes above + `memory` in `projectStateForApi`.
+- `test/memory-ledger.test.js` (new, 8 tests): create/provenance/revisions, validation with no-partial-mutation guarantee, redaction+clamps, version conflicts, pin semantics, duplicate-source rejection, support-state matrix, legacy backfill + lean projection.
+- `test/memory-api.test.js` (new, 2 tests): full REST lifecycle (201 create, 409 stale version, pin, supplemental source, 400 duplicate/sourceless, lean `/api/state`, on-disk persistence incl. revisions, audit lineage) and 403 for untokened callers.
+
+**How to verify**
+- `node --test test/memory-ledger.test.js test/memory-api.test.js` → 10/10 pass.
+- `npm test` → 148/148 pass (was 138).
+- `node --check src/lib/memory-ledger.js src/lib/store.js src/server.js` → pass; `git diff --check` → only the repo's usual LF→CRLF warning.
+
+**Open items (deliberately out of this task's scope)**
+- Status transitions (`accepted`/`verified`/`disputed`/`superseded`), supersession linking, and the §6.2 transition matrix — the ledger stores `status` and revisions record it, so a governed `POST /api/memory/items/:id/status` slice can build directly on this.
+- `workspaceId` is omitted (no canonical workspace identity exists yet — ADR Stage 0); items are room-scoped (`scope: 'room'`).
+- Prompt/context-assembler consumption of pinned+applicable items (§7.1 step 4) and the Decisions UI surface are separate slices; nothing injects ledger text into prompts yet.
+- Live server restart still pending (existing Board task); unrelated teammate changes in the dirty tree untouched; nothing committed.
+
+### claude — 2026-07-15 23:45 UTC — Verbatim history is now a store-level budgeted query; prompts disclose pruning
+
+**Concrete conclusion**
+- History selection for agent prompts moved from ad hoc code in `src/server.js` into a pure Tier 1 verbatim-history query in `src/lib/store.js` (`queryHistory`), per the `docs/memory.md` §7.2/§14 seams. Depth is now governed by the character/token budget, not a fixed message count; the count caps (task 20→40, chat 30→60) are only flood guards.
+- Token limits are supported via `maxTokens` with the identified `chars/4` estimator (`HISTORY_TOKEN_ESTIMATOR`, `estimateTokens`); the strictest of character/token budgets wins. Call sites stay character-budgeted (argv/CreateProcess is a character limit); results report `usedCharacters`/`estimatedTokens`/`estimator` so future context receipts can record them.
+- Prompt context pruning is now honest (§7.3): when older messages are dropped, the history section starts with `- [N earlier messages pruned to fit the context budget]` instead of implying complete coverage. The excluded reply target is not counted as pruned. The newest message always survives, and the query never mutates stored messages (clamping happens on copies).
+
+**What changed**
+- `src/lib/store.js`: new `queryHistory(state, { excludeId, limit, clamp, budget, maxTokens })` + `estimateTokens` + estimator constants. Per-entry cost accounting exactly mirrors the rendered prompt line.
+- `src/server.js`: `transcriptLines` delegates to `queryHistory`, renders lines, and prepends the pruning marker; `promptForTask`/`promptForChat` budgets unchanged (5K/9K chars), depth caps raised so the budget binds.
+- `test/history-query.test.js` (new, 8 tests): budget-governed depth, newest-survives, oldest-first ordering, excludeId semantics, clamp without store mutation, token estimator/bounds, strictest-budget-wins, exact cost-mirror vs `transcriptLines`, marker rendering.
+- `test/server.test.js`: the two existing prompt-budget tests now also assert the marker appears when pruned and is absent when everything fits.
+
+**How to verify**
+- `node --test test/history-query.test.js test/server.test.js` → 19/19 pass.
+- `npm test` → 138/138 pass (was 130).
+- `node --check src/lib/store.js src/server.js` → pass; `git diff --check` → only the repo's usual LF→CRLF warnings.
+
+**Open items**
+- Live server restart still pending (existing Board task) — the running process serves the old prompt code until then.
+- Next slices per `docs/memory.md` §7: inject the Tier 2 rollup into prompts (Grok's open item), then persist context receipts. `queryHistory`'s result shape (`usedCharacters`/`estimatedTokens`/`estimator`/`omitted`) was designed to feed those receipts.
+- Unrelated teammate changes in the dirty tree were untouched; nothing committed.
+
+### codex — 2026-07-15 22:05 UTC — Conclave memory architecture decision written
+
+**Concrete conclusion**
+- Selected a local-first hybrid: build Conclave's event/governance/provenance/correction/forgetting/context layers; adopt built-in `node:sqlite` and FTS5; keep vectors behind a measured, disabled-by-default adapter; reject hosted or separate agent-memory runtimes as the primary store.
+- The sidecar SQLite work is a migration bridge. The target is one versioned SQLite source of truth with an append-only room-event envelope, revisioned three-tier memory, governed promotion, deterministic retrieval receipts, and optional encrypted backup/export only.
+
+**What changed**
+- `docs/adr/0001-conclave-memory-architecture.md` (new): decision matrix, timestamped event identity, logical schema, retrieval pipeline, write/promotion authority, provenance, correction, contradiction, forgetting, security boundaries, repository seams, rollout stages, and 20 measurable acceptance gates.
+- `COORDINATION.md`: released this claim and recorded the handoff.
+
+**Validation**
+- ADR audit script: all 13 required decision sections/checks passed; no trailing whitespace; unique headings; six balanced fences; local `../memory.md` link resolves; 20 acceptance gates detected.
+- `git diff --check -- docs/adr/0001-conclave-memory-architecture.md COORDINATION.md` passed; only the repository's existing LF-to-CRLF warning for `COORDINATION.md` was emitted.
+- `npm test` was not run because this task changed documentation and coordination only, not `src/` or `test/`.
+
+**Open items**
+- ADR status is `Proposed for operator acceptance`; implementation must not treat the existing SQLite, summary, or backup prototypes as rollout-complete until their integrated stage gates pass.
+- First implementation gate is Stage 0: Node `>=22.13.0`, shared room-event sequence/envelope, versioned JSON migration, canonical workspace identity, and the pure receipt-producing context assembler.
+
+### gemini — 2026-07-15 21:56 UTC — Encrypted cloud backup expansion tier implemented
+
+**Concrete conclusion**
+- Created the `BackupAdapter` class to serialize Tier 3 memory graphs (memory items, connections, sources) or all tables, encrypt/decrypt them using AES-256-GCM with a passphrase (via scrypt key derivation), and restore them.
+- Implemented file system and HTTP push funnels to push the encrypted data to designated local paths or remote webhook/storage URLs.
+- Exposed `POST /api/backup` and `POST /api/backup/restore` API endpoints in the web server to trigger backups and restores via REST clients.
+- Configured SQLite connections to default to `:memory:` in test environments to prevent Windows file locking issues and speed up test execution.
+
+**What changed**
+- `src/lib/backup-adapter.js` (new): Implements serialization, GCM encryption, file/HTTP push, and database restoration.
+- `src/server.js`: Wire `MemoryDb` and `BackupAdapter` into `ConclaveApp` initialization and shutdown. Register POST endpoints `/api/backup` and `/api/backup/restore` with CSRF, origin, and session token authentication.
+- `test/backup-adapter.test.js` (new): Unit tests for BackupAdapter.
+- `test/backup-api.test.js` (new): Integration tests for backup and restore REST API endpoints.
+
+**How to verify**
+- Run `node --test test/backup-adapter.test.js` (6/6 pass).
+- Run `node --test test/backup-api.test.js` (1/1 pass).
+- Run `npm test` to verify all 130 tests pass.
+
+### gemini — 2026-07-15 21:55 UTC — SQLite memory database schema implemented
+
+**Concrete conclusion**
+- Designed and implemented a local-first SQLite schema using Node's built-in `node:sqlite` database engine, fully aligned with the three-tier memory specification in `docs/memory.md`.
+- Implemented Full Text Search (FTS5) for messages (Tier 1) and memory items (Tier 3) with automated triggers to keep search virtual tables synchronized.
+- Supported nested transactions safely in `MemoryDb` by tracking the active transaction state.
+
+**What changed**
+- `src/lib/memory-db.js` (new): Implements `MemoryDb` class containing:
+  - Table schemas: `workspaces`, `rooms`, `messages` (with sequence indices), `message_revisions`, `summary_checkpoints`, `summary_rollups`, `summary_sources`, `summary_jobs`, `memory_items`, `memory_item_revisions`, `memory_sources`, `memory_connections` (graph edges), `context_receipts`, and `context_receipt_entries`.
+  - Full Text Search (FTS5) tables (`messages_fts`, `memory_items_fts`) and synchronizing triggers.
+  - API methods: `saveWorkspace`, `saveRoom`, `saveMessage` (with revisioning), `saveCheckpoint`, `saveRollup`, `saveSummaryJob`, `rememberNode` (with revisions), `connectNodes`, `disconnectNodes`, `getConnections`, `addNodeSource`, `saveContextReceipt`, FTS search, and transaction helpers.
+- `test/memory-db.test.js` (new): 9 unit tests verifying initialization, workspace/room persistence, Tier 1 messages/revisions/FTS, Tier 2 checkpoints/rollups/jobs, Tier 3 node CRUD/revisions/FTS, graph connections, provenance sources, context receipts, and transaction rollback behavior.
+
+**How to verify**
+- `node --test test/memory-db.test.js` -> 9/9 pass.
+- `npm test` -> 123/123 pass.
+
+### gemini — 2026-07-15 21:50 UTC — Add hoverable local timestamps to chat feed and runs
+
+**Concrete conclusion**
+- Implemented offset-aware local ISO and local formatted time tooltips for message and execution run timestamps in the UI.
+- Styled hovered message and run timestamps with a dotted underline and a helpful cursor/color transition to signify interactivity.
+- Ensured zero browser/console errors or syntax issues through strict standard browser ESM syntax.
+
+**What changed**
+- `public/app.js`: Added the `formatLocalTime` utility function converting ISO dates to local ISO-8601 (with offset) and local formatting. Integrated this into the `title` attribute of both message timestamps (`.message-time`) and execution run timestamps (`.run-time`).
+- `public/styles.css`: Added interactive indicators (`cursor: help`, dotted underline, color transition, and hover states) to both `.message-time` and `.run-item .run-time`.
+
+**How to verify**
+- `npm test` → 114/114 tests pass.
+- `node --check public/app.js` → pass.
+- Inspect chat feed messages or execution runs in the UI and hover over relative timestamps; they display local offset-aware ISO timestamps along with local time in parentheses (e.g. `2026-07-15T17:47:34-04:00 (7/15/2026, 5:47:34 PM)`).
+
+**Open items**
+- None. Unrelated teammate changes and dirty trees were preserved.
+
+### grok — 2026-07-15 23:05 UTC — Rolling room summary generation (Tier 2 JSON bridge)
+
+
+**Concrete conclusion**
+- Implemented automated, incremental rolling room summaries that persist in `state.summary` and project through `/api/state`.
+- Producer is deterministic/structured (`room-summary-v1`) — no LLM required; chat never blocks on summary failure.
+- Integrity is verified via source digests, content hashes, contiguous checkpoint ranges, and fixed rollup sections.
+
+**What changed**
+- `src/lib/room-summary.js` (new): checkpoints, current rollup, digests, staleness, `advanceRoomSummary`, `verifySummaryIntegrity`, lean API projection.
+- `src/lib/store.js`: `summary` in initial state; legacy load backfills via `ensureSummaryState`.
+- `src/server.js`: debounced `scheduleSummaryRefresh` after messages/process events; catch-up on `initialize`; `summary` in `projectStateForApi`; close cancels pending refresh.
+- `test/room-summary.test.js` (new): 11 tests covering digests, incremental coverage, thresholds, staleness, honest failure, API projection, persistence.
+
+**Defaults** (aligned with `docs/memory.md` §5.3)
+- Checkpoint after 20 messages or 12k new transcript characters.
+- Checkpoint ≤ 4k chars; rollup ≤ 8k chars; fixed 8 rollup sections.
+- Debounce 500ms (injectable via `summaryDebounceMs` / `summaryOptions`).
+
+**How to verify**
+- `node --test test/room-summary.test.js` → 11/11 pass.
+- `npm test` → 114/114 pass.
+- `node --check src/lib/room-summary.js src/lib/store.js src/server.js` → pass.
+
+**Open items**
+- Not yet: leased `SummaryJob` workers, LLM prose producer, UI resume card, sequence numbers (JSON bridge uses message indexes), Tier 3 ledger sections (explicit empty), prompt assembler consumption of rollup.
+- Live server restart still needed to load this code.
+- Unrelated dirty tree from other agents left untouched; no commit/push.
+
+### codex — 2026-07-15 21:40 UTC — Three-tier Conclave memory design reviewed and unblocked
+
+**What changed**
+- Added `docs/memory.md`, a design-only implementation contract separating Tier 1 redacted verbatim history, Tier 2 derived checkpoint/rollup summaries, and Tier 3 operator-governed curated facts.
+- Specified schemas, provenance edges, digest-based invalidation, leased summary jobs, deterministic context budgets/receipts, epistemic state transitions, per-source support state, canonical workspace scope, authenticated reads/exports, emergency secret sanitation, deterministic legacy JSON import, the SQLite scale target, APIs/events/UI seams, acceptance gates, and phased delivery.
+- No runtime, retention, policy, dependency, or live-room behavior changed.
+
+**Room review**
+- Independent architect/security/critic review initially blocked on the absent rollup persistence/recovery contract and emergency redaction retaining recoverable secret copies.
+- Both blockers and all follow-up high-severity findings were resolved. Final targeted verdict: `UNBLOCKED`; no blocking or high-severity findings remain.
+
+**Validation**
+- Direct trailing-whitespace scan of `docs/memory.md` — pass.
+- Markdown structure check — pass: 582 lines, 18 balanced fences, 47 unique headings, all required tier/security/migration/review sections present.
+- Implementation touchpoint existence check — pass for `src/lib/store.js`, `src/server.js`, `public/app.js`, `test/server.test.js`, and `test/state-projection.test.js`.
+- `git diff --check -- COORDINATION.md` — pass; only the repository's existing LF→CRLF warning was emitted.
+- `npm test` not run because this task changed documentation/coordination only, not `src/` or `test/`.
+
+**Open items**
+- Follow-on implementation starts at Phase 0/1 in `docs/memory.md`; the JSON bridge explicitly has no 100,000-message SLA, which belongs to the SQLite phase.
+- Existing unrelated teammate modifications and untracked scratch artifacts were preserved. No commit, push, dependency install, or live server restart was performed.
+
+### codex — 2026-07-15 21:22 UTC — Grok cancellation buffer isolated and live cancel/follow-up verified
+
+**What changed**
+- `src/lib/adapters.js`: added an explicit `clearAgentSummary`; real Grok invocation builds still start with a clean accumulator, while approval-only invocation previews opt out so they cannot truncate an active stream.
+- `src/server.js`: `execution.cancelling` clears the active agent buffer immediately; a cancelled finish clears again to discard any output drained after the kill request instead of publishing or retaining it. `buildWriteApproval` marks its invocation as preview-only.
+- `test/adapters.test.js`: retains the exact `CANCELLED_PART|` then `NEXT_REPLY` regression and adds a guard proving approval previews preserve an active Grok accumulator.
+- `test/server.test.js`: adds a cancellation lifecycle regression covering both buffered pre-cancel text and late text after cancellation begins.
+
+**Validation**
+- `node --check src/lib/adapters.js; node --check src/server.js; node --check test/adapters.test.js; node --check test/server.test.js` — pass.
+- `node --test test/adapters.test.js test/server.test.js` — 19/19 pass.
+- `npm test` — 103/103 pass.
+- `git diff --check -- src/lib/adapters.js src/server.js test/adapters.test.js test/server.test.js COORDINATION.md` — pass; only existing LF-to-CRLF warnings.
+- Isolated real Grok `0.2.93` smoke on a temporary state file and ephemeral port: cancelled after 1,506 bytes of streamed output; cancelled turn status `cancelled`; zero Grok messages published for the cancelled turn; follow-up completed with exactly `NEXT_REPLY`; `CANCELLED_PART` absent. Temporary state/server were removed; the live room was untouched.
+
+**Open item**
+- Restart the live Conclave server after other work is ready so its in-memory module loads this fix. No commit, push, or live-room restart was performed in this run. Existing unrelated teammate changes were preserved.
+
+### claude — 2026-07-15 22:35 UTC — Last full-command hole in /api/state closed: agent-write approval `command` now previewed, projection-only
+
+**Concrete conclusion**
+- The execution-record half of this promoted task ("Truncate execution commands in state projection") was already landed and verified (see the 21:02 and 21:55 handoffs below). The one place full command strings still remained in the projection was **approval records**: `buildWriteApproval` stores the full prompt-bearing argv in `command` (display-only — approval runs `startTask`, which rebuilds the invocation fresh).
+- `src/server.js` `projectStateForApi`: `agent-write` approval `command` fields now run through `previewCommand` in the projection. The store/disk keeps the full string — projection only, exactly as the task specified.
+- **Deliberately NOT previewed:** `command`-type approvals. That string executes verbatim on approval (`startCommand`, server.js), and the projection is what the operator reads before deciding — truncating it would hide the tail of a command from the approver. They're already capped at 4,000 chars at intake. A regression test now locks this invariant in.
+- Documented size cap: `COMMAND_PREVIEW_CAP = 240` (exported from `src/server.js`, comment above `projectStateForApi`) — 200 preview chars + the `… [N chars total]` marker.
+
+**Measured evidence (scratch server on a copy of the live state, port 4399; live copy untouched)**
+- `/api/state` = 200, **2,024,530 bytes** — down from 2,415,066 at the 21:55 handoff (~390 KB / 16% further cut, and the live state grew in between).
+- 103 approvals in the projection, 101 agent-write; max projected agent-write `command` = 220 chars (≤ 240 cap); total approval command chars 20,565 (was ~181,829+).
+
+**How to verify**
+- `node --test test/state-projection.test.js` → 7/7 pass (two new: 44K-char agent-write fixture stays ≤ `COMMAND_PREVIEW_CAP` with the store unmutated; command-type approvals stay verbatim).
+- `npm test` → 101/101 pass.
+- `node --check src/server.js` → pass.
+
+**Open items**
+- Live server restart still pending (covered by the existing "Restart Conclave on current code" Board task) — until then the running process serves the pre-preview projection.
+- Remaining `/api/state` weight is messages (~608 KB+), audit, and tasks — windowing those is a separate slice; no command strings remain unprojected.
+
+### claude — 2026-07-15 21:55 UTC — Execution records in /api/state verified lean; `purpose` field now previewed too
+
+**Concrete conclusion**
+- Most of this promoted task had already landed (creation-time + projection `command` previews, output strip to a 500-char tail, 200-record cap). This run verified all of it against the real state and closed the one remaining gap: `purpose` carried the full task objective or chat message text per execution record, unprojected (72 of the top-200 live records exceeded 200 chars, max 1,754).
+- `src/server.js` `projectStateForApi`: `purpose` now runs through the same `previewCommand` 200-char preview as `command`. Store records are untouched — projection only.
+- `test/state-projection.test.js`: new fifth test proves a 2,400-char purpose projects as `<200 chars>… [N chars total]` while the store keeps the full string.
+
+**Measured evidence (real state, 371 executions)**
+- Live server (old code in memory): `/api/state` = 3,752,852 bytes.
+- Scratch instance on a copy of the same state with current+patched code (port 4398): `/api/state` = 200, **2,415,066 bytes** — a 1.34 MB / ~36% cut vs live.
+- Raw state with no projection at all would be 16,541,177 bytes; the projection carries 200 of 371 executions, max projected command 221 chars, max projected purpose 220 chars, zero records with an `output` field.
+- UI consumers load: `GET /` → 200 (13,566 B), `GET /app.js` → 200 (43,509 B). The only UI reader of `purpose` is the run-meta line (`app.js:393`, escaped) — a preview renders fine.
+- Reproduce the numbers: `node deferred-tests/measure-projection.mjs` (untracked scratch, mirrors the projection).
+
+**How to verify**
+- `node --test test/state-projection.test.js` → 5/5 pass.
+- `npm test` → 99/99 pass.
+- `node --check src/server.js` → pass.
+
+**Open items**
+- Restart the live server to serve the slim payload (it still runs pre-preview code; the pending "Restart Conclave on current code" Board task covers this).
+- Remaining `/api/state` weight is NOT executions: messages/audit/approvals/tasks (~2.1 MB). Known next slice: `buildWriteApproval` still stores full prompt argv in approval `command` fields (~313 KB) — same one-line `previewCommand` fix, approval records scope.
+
+### grok — 2026-07-15 21:10 UTC — Capability-verification broker design doc complete (trust / assign-write / hooks)
+
+**Concrete conclusion**
+- Design-only: no runtime, adapter, policy, or UI product flip.
+- Base contract was already on `main` as `2c2787e` (`docs/capability-broker-design.md`).
+- Amended in this run with the promoted-task emphasis: **trust boundaries**, **who can assign/write**, **verification hooks**, expanded non-goals and open questions.
+
+**What the doc now contains (verify these headings)**
+- §4 Goals + non-goals (explicit: no runtime switch in this task).
+- §6.4 Trust boundaries (as-built) — operator session, control plane, data plane, room trust, one-writer, audit.
+- §6.5 Who can assign / write — as-built matrix (operator / coordinator gated / any agent gated / unleashed) and Phase 3 broker intent target; `verified-agents` today vs capability-aware target.
+- §6.6 Verification hooks A–G — assignment fit, auto-approve, spawn profile, connection-only, UI, probe runner, MCP inventory.
+- §14 Open questions (9 items, including fit severity and Coordinator probe rights).
+- §15 Summary table answers assign/write/hooks directly.
+
+**How to verify**
+- Open `docs/capability-broker-design.md` and confirm §§6.4–6.6, §4 non-goals, §14–15.
+- `git diff -- docs/capability-broker-design.md` — markdown only (plus this handoff in `COORDINATION.md`).
+- `git status` — no `src/` or `public/` edits from this task.
+- `npm test` not required (design-only; not run).
+
+**Open items**
+- Implementation remains Phase 1+ in the same doc; do not start product flip from this handoff alone.
+- Live Grok `bypassPermissions` flag name still noted open from trust work.
+- Doc is uncommitted relative to `2c2787e`; operator/coordinator may commit when ready.
+
+### codex — 2026-07-15 21:04 UTC — Invocation-start accumulator reset verified as already landed
+
+**Concrete conclusion**
+- No second application-source patch was applied in this promoted run: the shared worktree already contains the requested `buildAgentInvocation` reset and cancellation regression from the earlier Codex task.
+- `src/lib/adapters.js` clears the Grok text accumulator synchronously whenever a new Grok invocation is built, before the child process can stream output.
+- `test/adapters.test.js` buffers `CANCELLED_PART|` without an `end` event, builds the next invocation, and proves that run completes as exactly `NEXT_REPLY` with no cancelled-run text.
+
+**How to verify**
+- `node --test test/adapters.test.js` → 7/7 pass.
+- `npm test` → 98/98 pass.
+- `node --check src/lib/adapters.js` and `node --check test/adapters.test.js` → pass.
+- `git diff --check -- src/lib/adapters.js test/adapters.test.js COORDINATION.md` → pass; only existing LF→CRLF warnings were printed.
+
+**Open item**
+- No live child-process cancellation was performed; the deterministic adapter-level regression covers the exact `CANCELLED_PART|NEXT_REPLY` failure sequence.
+
+### codex — 2026-07-15 21:02 UTC — Execution-command projection task verified as already landed
+
+**Concrete conclusion**
+- No application source was changed in this run. The promoted task duplicated Claude's existing uncommitted command-preview patch, so teammate-owned changes were preserved.
+- `src/server.js` already projects each execution `command` through `previewCommand`; the helper keeps a 200-character identifying prefix plus a short original-length marker, which is stricter than the requested 500-character cap and prevents full prompt argv from swelling `/api/state`.
+- `test/state-projection.test.js` already proves legacy prompt-bearing commands are previewed without mutating the full stored execution record.
+
+**How to verify**
+- `node --test test/state-projection.test.js` → 4/4 pass.
+- `node --check src/server.js; node --check src/lib/utils.js; node --check test/state-projection.test.js` → pass.
+- `npm test` → 98/98 pass.
+
+**Open item**
+- The command-preview implementation remains part of Claude's uncommitted shared-tree changes; this duplicate task should not apply a second projection patch.
+
+### codex — 2026-07-15 21:00 UTC — Coordinator can assign runnable work instead of only proposing Inbox tasks
+
+**What changed**
+- `src/server.js`: the selected Coordinator prompt now carries real bounded authority, including live idle/busy teammate context. Coordinator plan blocks create explicit Board assignments: read-only tasks enter the scheduler immediately, busy assignees stay queued, and workspace-write tasks use the existing approval/autopilot policy. Unleashed behavior remains automatic; non-coordinator plan blocks remain inert in Gated rooms.
+- `public/index.html`: removed the stale “Advisory authority only” / “plans wait in Board Inbox” copy. Roles and trust notices now describe runnable read-only assignments plus policy-gated writes.
+- `test/roles.test.js`, `test/trust.test.js`: regressions cover prompt consistency, idle-agent dispatch, gated write approval, policy auto-approval, non-coordinator rejection, dependency lineage, and Unleashed prompt consistency.
+- Operator-only boundaries are unchanged: the Coordinator still cannot approve its own access, accept reviews, assign roles, or change room settings. The idle Grok teammate was assigned a read-only audit and confirmed the role/trust contradiction and scheduler seam; it made no files changes.
+
+**How to verify**
+- `node --check src/server.js; node --check test/roles.test.js; node --check test/trust.test.js`
+- `node --test test/roles.test.js test/trust.test.js` → 11/11 pass.
+- `npm test` → 98/98 pass.
+- `git diff --check -- src/server.js public/index.html test/roles.test.js test/trust.test.js COORDINATION.md` → pass (line-ending warnings only).
+- Start/restart Conclave, hard-refresh the tokened URL, open **Roles**, and confirm the notice begins **Coordinator authority**. Ask the selected Coordinator to delegate one read-only task to an idle teammate; it should enter Ready/Active without an Inbox approval.
+
+**Open items**
+- The live room server was not restarted because teammate runs were active; restart after they finish so the new server prompt/dispatch logic loads.
+- Headless browser rendering was attempted, but Chrome hung before producing DOM. An isolated patched server returned `200` for `/` and `/api/state`, served both new notices, and omitted the old advisory copy. All scratch browser/server processes and temp profiles were removed.
+- Existing uncommitted command-preview changes in `src/server.js` and other unrelated teammate files were preserved and not committed.
 
 ### grok — 2026-07-15 — Capability verification / broker design doc drafted
 

@@ -1,0 +1,36 @@
+**Audit verdict: the rolling-summary core (digests, contiguity, honest failure, persistence) is sound, but it fails on the real room today — 3 high-severity spec violations plus 1 security deviation need fixes before this is trusted as "current" summary state.** No files were modified (read-only run); findings below are for Grok's follow-up task.
+
+## Measured evidence (read-only probe, no writes to live state)
+
+I loaded the real `.conclave/state.json` (163 tasks, 1,366 messages, no `summary` key yet since the live server predates this code) into memory and ran `advanceRoomSummary` on the copy:
+
+- The untruncated rollup would be **10,976 chars** vs the 8,000 cap. After truncation, **4 of 8 fixed sections are missing** (Validation and evidence, Proposed/accepted decisions, Open questions and disagreements, Pending reviews and approvals).
+- The module's own `verifySummaryIntegrity` returns **ok: false** on the result — yet `advanceRoomSummary` committed it as `current` anyway.
+- The catch-up checkpoint covers all 1,366 messages in one 3,993-char record, and its `sourceMessageIds` (1,366 IDs) push the projected summary to **68,109 bytes** in `/api/state`.
+- Tests: `node --test test/room-summary.test.js` → 11/11 pass; `npm test` → **123/123 pass** (handoff said 114/114 — teammates added tests since; nothing fails).
+
+## High-severity findings
+
+1. **Fixed-section guarantee breaks on realistic state; nothing validates before commit** (spec §5.1, §5.4 step 5). The Active/Blocked/Pending section inputs are unbounded — `room-summary.js:157-159`, `:161-163`, `:180-187` have no slice caps (unlike Landed/Validation) — and the post-hoc truncation at `room-summary.js:200-204` silently drops trailing sections. `advanceRoomSummary` (`room-summary.js:464-474`) never runs `verifySummaryIntegrity` before committing, so the shipped integrity checker only ever runs in tests. Spec: sections exist "so omissions are visible"; here omission is exactly what truncation produces.
+
+2. **No secret re-scan on generated summary content** (spec §3 invariant 2, §5.4 step 5, §10). `room-summary.js` never calls `redactSecrets` (`src/lib/redact.js:14`). Redaction currently exists only at the process-manager boundary (`src/lib/process-manager.js:57,69`). The summary copies: user message content, which is **not** redacted at intake (`src/server.js:1131`); agent-write approval `command`, which stores the full unredacted prompt argv (`src/server.js:949`) and is copied into the rollup at `room-summary.js:186`; and task titles/blockers/execution purposes (`room-summary.js:150,163,170`). A secret pasted in chat or a task objective lands in persisted summary content.
+
+3. **Invalidation is one-way and incomplete** (spec §5.2, §4.5). A source edit marks a checkpoint `stale` (`room-summary.js:396-403`) but: (a) the rollup is only marked stale on structured-state change (`room-summary.js:405-411`), so it stays `current` while referencing a stale checkpoint; (b) `coveredThroughIndex` never rolls back and no regeneration is ever enqueued, so the **pre-edit text is retained indefinitely** in `checkpoint.content` on disk. That directly conflicts with the emergency-redaction contract (§4.5 steps 2/4: sanitize summary text, invalidate summaries) — the summary creates a durable secret copy that a future redaction workflow would have to hunt down. The test at `test/room-summary.test.js:150-161` asserts only checkpoint staleness, enshrining the gap.
+
+4. **Security/spec deviation: memory text via unauthenticated read.** Full rollup content projects into open `GET /api/state` (`src/server.js:91-93`; the test fetches it with no token at `test/room-summary.test.js:242-244`). Spec §9 and acceptance criterion 13 require the operator session for any `/api/state` projection containing memory text. Open reads are pre-existing room design, so I rank this a deviation to decide on, not a regression — but it's written in the contract the room reviewed as UNBLOCKED. The 68 KB `sourceMessageIds` projection weight (`room-summary.js:514`) also works against Codex/Claude's payload-diet effort.
+
+## Medium / low
+
+- **M:** One catch-up checkpoint spans the entire backlog — coverage claim (1,366 messages, digest over all of them) vastly exceeds content (~16 message lines fit in 4K); spec's job model implies threshold-sized ranges.
+- **M:** Prior rollup revisions are replaced in place (`room-summary.js:468-473`); spec §8.1 expects `summaryRollups[]` to keep prior revisions.
+- **M:** Only two refresh triggers exist — `message.created` (`src/server.js:1133`) and execution events (`src/server.js:517`). Operator/API task, review, and approval transitions (spec §5.3 "material task/review/approval transition") never schedule a refresh, so the rollup can sit outdated and unflagged until the next message/exec event or restart.
+- **L:** Debounce default is 500 ms vs the spec's 30 s-idle default (`src/server.js:242`); the reset-on-activity timer postpones refresh under continuous output (spec-tolerated, but the priority-raise escape hatch isn't implemented). Dead no-op loops at `room-summary.js:449-454` and `:468-471`; `superseded` is set on an already-removed object at `:457-460`. Test gaps: no restart/reload persistence test (acceptance 1), no oversized-rollup test (would have caught finding 1), no redaction test.
+
+## What holds up well
+
+Digests are order- and content-sensitive with stored source IDs (§3 stable lineage); incremental checkpoints are contiguous and tamper-detectable; honest failure works (safe mode, `lastError`, message persistence never blocks on summaries — §3 invariant 7); commit of rollup + `currentRollupRef` is one mutation with tmp+rename atomic saves (`src/lib/store.js:84-100`); legacy states backfill cleanly (`store.js:71-76`); checkpoint bodies stay out of the projection; the producer is labeled and deterministic; catch-up on initialize and timer cancel on close are wired (`src/server.js:299-301`, `:1553-1558`). The declared deferrals (SummaryJob leases, LLM producer, sequences vs indexes, Tier 3, resume card) match the handoff and spec phasing.
+
+## Handoff
+
+- **For Grok ("Resolve summary audit findings"):** blocking items are findings 1–3. Suggested order: (1) cap every rollup section and run `verifySummaryIntegrity` before commit — on failure keep the prior rollup and set `lastError`; (2) `redactSecrets` over checkpoint/rollup content before hashing/persisting; (3) propagate checkpoint staleness to the rollup and regenerate stale checkpoints over their range instead of retaining pre-edit text; (4) drop or truncate `sourceMessageIds` from the API projection. Finding 4 (auth for memory text in `/api/state`) needs a Codex/operator decision since open reads are room-wide design.
+- **Reproduce my evidence:** `node --test test/room-summary.test.js` (11/11), `npm test` (123/123), and re-run the in-memory probe — load `.conclave/state.json`, call `advanceRoomSummary` on the copy, check `verifySummaryIntegrity(...).ok` and which `##` sections survive in `rollup.content`. Live state was not modified; full findings also saved to my plan file.

@@ -3,7 +3,15 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { AGENT_DEFINITIONS, buildAgentInvocation, resolveExecutable, summarizeAgentEvent } from '../src/lib/adapters.js';
+import {
+  AGENT_DEFINITIONS,
+  buildAgentInvocation,
+  buildDeclaredCapabilityProfile,
+  capabilityLabelsFor,
+  flushAgentSummary,
+  resolveExecutable,
+  summarizeAgentEvent
+} from '../src/lib/adapters.js';
 
 test('Codex adapter uses structured output and requested sandbox', () => {
   const run = buildAgentInvocation('codex', {
@@ -64,6 +72,37 @@ test('Grok adapter uses streaming-json output and correct permissions', () => {
   assert.equal(run.args[run.args.indexOf('--permission-mode') + 1], 'acceptEdits');
 });
 
+test('a cancelled Grok stream cannot contaminate the next reply', () => {
+  const options = {
+    executable: process.platform === 'win32' ? 'C:\\tools\\grok.exe' : '/tools/grok',
+    workspace: process.cwd(), accessMode: 'read-only'
+  };
+  buildAgentInvocation('grok', { ...options, prompt: 'Cancelled run' });
+  assert.equal(summarizeAgentEvent('grok', JSON.stringify({ type: 'text', data: 'CANCELLED_PART|' })), null);
+
+  // Cancellation means the first run never emits `end`. Building the next run
+  // must discard its abandoned partial text before new stream events arrive.
+  buildAgentInvocation('grok', { ...options, prompt: 'Next run' });
+  assert.equal(summarizeAgentEvent('grok', JSON.stringify({ type: 'text', data: 'NEXT_REPLY' })), null);
+  const nextReply = summarizeAgentEvent('grok', JSON.stringify({ type: 'end', stopReason: 'EndTurn' }));
+
+  assert.equal(nextReply, 'NEXT_REPLY');
+  assert.doesNotMatch(nextReply, /CANCELLED_PART/);
+});
+
+test('building a Grok approval preview does not reset an active stream', () => {
+  const options = {
+    executable: process.platform === 'win32' ? 'C:\\tools\\grok.exe' : '/tools/grok',
+    workspace: process.cwd(), accessMode: 'workspace-write'
+  };
+  buildAgentInvocation('grok', { ...options, prompt: 'Active run' });
+  summarizeAgentEvent('grok', JSON.stringify({ type: 'text', data: 'ACTIVE_PART' }));
+
+  buildAgentInvocation('grok', { ...options, prompt: 'Approval preview', resetSummary: false });
+
+  assert.equal(flushAgentSummary('grok'), 'ACTIVE_PART');
+});
+
 test('structured agent messages are extracted for the room feed', () => {
   const codex = summarizeAgentEvent('codex', JSON.stringify({
     type: 'item.completed', item: { type: 'agent_message', text: 'Evidence found.' }
@@ -79,4 +118,20 @@ test('structured agent messages are extracted for the room feed', () => {
   assert.equal(grokText1, null);
   assert.equal(grokText2, null);
   assert.equal(grokEnd, 'Part 1 Part 2');
+});
+
+test('agent definitions expose structured declaredCapabilities without removing legacy labels', () => {
+  for (const definition of AGENT_DEFINITIONS) {
+    assert.ok(Array.isArray(definition.declaredCapabilities));
+    assert.ok(definition.declaredCapabilities.some((entry) => entry.key === 'conversation.stream'));
+    assert.ok(definition.probeSupport['P-detect']);
+    assert.ok(definition.probeSupport['P-stream']);
+    const labels = capabilityLabelsFor(definition);
+    assert.ok(labels.includes('repository inspection'));
+    const profile = buildDeclaredCapabilityProfile(definition);
+    assert.equal(profile.capabilities['conversation.stream'].confidence, 'declared');
+  }
+  const gemini = AGENT_DEFINITIONS.find((definition) => definition.id === 'gemini');
+  assert.equal(gemini.probeSupport['P-agy-mcp'], true);
+  assert.equal(gemini.command, 'agy');
 });

@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
-import { id, now } from './utils.js';
+import { id, now, previewCommand } from './utils.js';
 import { redactSecrets } from './redact.js';
 
 export class ProcessManager {
@@ -52,7 +52,9 @@ export class ProcessManager {
       agentId,
       kind,
       purpose,
-      command: redactSecrets([invocation.command, ...invocation.args].join(' ')),
+      // argv carries the full task prompt for some CLIs — persist only a preview
+      // (redact before truncating so a secret cannot be split past the pattern).
+      command: previewCommand(redactSecrets([invocation.command, ...invocation.args].join(' '))),
       cwd,
       status: 'running',
       exitCode: null,

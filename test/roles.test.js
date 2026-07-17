@@ -63,9 +63,9 @@ test('US-041: roles endpoint assigns a coordinator and specialist roles with val
   assert.equal(app.store.state.room.coordinatorId, null);
 });
 
-test('prompts carry roles: coordinator gets plan instructions, teammates see role labels, others get none', () => {
+test('prompts carry roles: coordinator gets assignment authority and live availability, teammates see role labels', () => {
   const state = {
-    room: { workspace: 'C:\\ws', coordinatorId: 'claude', roles: { codex: ['implementer'] } },
+    room: { workspace: 'C:\\ws', trust: 'gated', coordinatorId: 'claude', roles: { codex: ['implementer'] } },
     agents: [
       { ...agentRow('claude', 'Claude') },
       { ...agentRow('codex', 'Codex') }
@@ -74,9 +74,11 @@ test('prompts carry roles: coordinator gets plan instructions, teammates see rol
     messages: []
   };
   const coordinatorPrompt = promptForChat({ id: 'm1', content: 'plan the work' }, state.agents[0], state);
-  assert.match(coordinatorPrompt, /Coordinator \(advisory/);
+  assert.match(coordinatorPrompt, /You are this room’s Coordinator\./);
   assert.match(coordinatorPrompt, /```conclave-plan/);
-  assert.match(coordinatorPrompt, /nothing runs until the operator approves/);
+  assert.match(coordinatorPrompt, /Available agents: claude \(idle\), codex \(idle\)/);
+  assert.match(coordinatorPrompt, /Read-only tasks run when their assignees are idle/);
+  assert.doesNotMatch(coordinatorPrompt, /advisory|nothing runs until the operator approves/i);
 
   const workerPrompt = promptForChat({ id: 'm1', content: 'hi' }, state.agents[1], state);
   assert.match(workerPrompt, /Your roles in this room: implementer\./);
@@ -87,7 +89,7 @@ test('prompts carry roles: coordinator gets plan instructions, teammates see rol
   assert.match(taskPrompt, /Claude \(coordinator\)/, 'teammate list labels the coordinator');
 });
 
-test('US-042: a coordinator plan block becomes proposed Inbox tasks with resolved dependencies and zero runs', async (context) => {
+test('US-042: a coordinator plan assigns idle agents immediately while write access remains gated', async (context) => {
   const { app, started, directory } = await makeApp('conclave-plan-', (state) => {
     state.agents = [agentRow('claude', 'Claude'), agentRow('codex', 'Codex')];
     state.room.coordinatorId = 'claude';
@@ -111,19 +113,20 @@ test('US-042: a coordinator plan block becomes proposed Inbox tasks with resolve
   }));
   await finish(app, started[0]);
 
-  const proposed = app.store.state.tasks.filter((task) => task.status === 'proposed');
-  assert.equal(proposed.length, 2, 'two valid entries proposed; invalid agent and missing title skipped');
-  const diagnose = proposed.find((task) => task.title === 'Diagnose the flaky test');
-  const fix = proposed.find((task) => task.title === 'Fix the flaky test');
+  assert.equal(app.store.state.tasks.length, 2, 'two valid entries assigned; invalid agent and missing title skipped');
+  const diagnose = app.store.state.tasks.find((task) => task.title === 'Diagnose the flaky test');
+  const fix = app.store.state.tasks.find((task) => task.title === 'Fix the flaky test');
   assert.equal(diagnose.origin, 'coordinator');
   assert.equal(diagnose.proposedBy, 'claude');
   assert.deepEqual(fix.dependencies, [diagnose.id], 'dependsOn index resolved to the created task id');
-  assert.equal(started.length, 1, 'no runs launched by the proposal');
-  assert.equal(app.store.state.approvals.length, 0, 'no approvals created by the proposal');
+  assert.equal(diagnose.status, 'active', 'read-only assignment starts on the idle assignee');
+  assert.equal(fix.status, 'waiting', 'write assignment waits for authority');
+  assert.equal(started.length, 2, 'the chat run and idle agent task both launched');
+  assert.equal(app.store.state.approvals.filter((entry) => entry.taskId === fix.id && entry.status === 'pending').length, 1);
   const planMessage = app.store.state.messages.find((entry) => entry.id === 'msg_plan');
-  assert.match(planMessage.content, /\[Proposed 2 tasks — review them in the Board Inbox\]/);
+  assert.match(planMessage.content, /\[Assigned 2 tasks to the Board\]/);
   assert.ok(app.store.state.messages.some((entry) => entry.source === 'system' && entry.content.includes('Skipped')));
-  assert.ok(app.store.state.audit.some((entry) => entry.type === 'plan.proposed'));
+  assert.ok(app.store.state.audit.some((entry) => entry.type === 'plan.dispatched'));
 });
 
 test('plan blocks from a non-coordinator agent are inert text', async (context) => {
@@ -146,10 +149,12 @@ test('plan blocks from a non-coordinator agent are inert text', async (context) 
   assert.match(app.store.state.messages.find((entry) => entry.id === 'msg_sneak').content, /conclave-plan/, 'message left untouched');
 });
 
-test('proposed coordinator tasks are operator-gated: Dismiss rejects, Mark ready on a write task requires approval', async (context) => {
-  const { app, started, directory, base } = await makeApp('conclave-plan-gate-', (state) => {
+test('gated coordinator assignments honor operator-authored write autopilot policy', async (context) => {
+  const { app, started, directory } = await makeApp('conclave-plan-policy-', (state) => {
     state.agents = [agentRow('claude', 'Claude'), agentRow('codex', 'Codex')];
     state.room.coordinatorId = 'claude';
+    state.policy.enabled = true;
+    state.policy.autoApproveWrites = 'verified-agents';
   });
   context.after(async () => { app.processes.running.clear(); await app.close(); await app.store.update(() => {}); await rm(directory, { recursive: true, force: true }); });
 
@@ -157,7 +162,6 @@ test('proposed coordinator tasks are operator-gated: Dismiss rejects, Mark ready
   await app.store.update((state) => state.messages.push(message));
   const turn = await app.createChatTurn(message, app.store.state.agents[0]);
   const plan = JSON.stringify([
-    { title: 'Research approach', objective: 'obj', agentId: 'codex', accessMode: 'read-only' },
     { title: 'Apply the change', objective: 'obj', agentId: 'codex', accessMode: 'workspace-write' }
   ]);
   await app.store.update((state) => state.messages.push({
@@ -165,19 +169,11 @@ test('proposed coordinator tasks are operator-gated: Dismiss rejects, Mark ready
     content: `\`\`\`conclave-plan\n${plan}\n\`\`\``, createdAt: new Date().toISOString()
   }));
   await finish(app, started[0]);
-  const research = app.store.state.tasks.find((task) => task.title === 'Research approach');
   const apply = app.store.state.tasks.find((task) => task.title === 'Apply the change');
-
-  const dismissed = await post(base, `/api/tasks/${research.id}/transitions`, { to: 'rejected' });
-  assert.equal(dismissed.status, 200);
-  assert.equal(app.store.state.tasks.find((task) => task.id === research.id).status, 'rejected');
-
-  const marked = await post(base, `/api/tasks/${apply.id}/transitions`, { to: 'ready' });
-  assert.equal(marked.status, 200);
-  const applyAfter = app.store.state.tasks.find((task) => task.id === apply.id);
-  assert.equal(applyAfter.status, 'waiting', 'write proposal waits for authority');
-  assert.equal(app.store.state.approvals.filter((entry) => entry.taskId === apply.id && entry.status === 'pending').length, 1);
-  assert.equal(started.length, 1, 'nothing launched without the operator decision');
+  assert.equal(apply.status, 'active', 'standing room policy lets the assignment enter the run queue');
+  assert.equal(app.store.state.approvals.filter((entry) => entry.taskId === apply.id && entry.status === 'auto-approved').length, 1);
+  assert.ok(app.store.state.audit.some((entry) => entry.type === 'approval.auto-approved' && entry.taskId === apply.id));
+  assert.equal(started.length, 2, 'the policy-approved write launches on the idle verified agent');
 });
 
 test('plan edge cases are surfaced: truncated blocks reject loudly, dropped dependencies are named', async (context) => {
@@ -214,10 +210,10 @@ test('plan edge cases are surfaced: truncated blocks reject loudly, dropped depe
   }));
   await finish(app, started[1]);
   const dependent = app.store.state.tasks.find((task) => task.title === 'Dependent task');
-  assert.ok(dependent, 'valid entry still proposed');
+  assert.ok(dependent, 'valid entry still assigned');
   assert.deepEqual(dependent.dependencies, []);
   assert.ok(app.store.state.messages.some((entry) =>
     entry.source === 'system' && entry.content.includes('dropped dependency on invalid or skipped entry #1')));
-  const proposedAudit = app.store.state.audit.find((entry) => entry.type === 'plan.proposed');
-  assert.match(proposedAudit.detail, /raw plan: /, 'audit preserves the raw approved-against block');
+  const dispatchedAudit = app.store.state.audit.find((entry) => entry.type === 'plan.dispatched');
+  assert.match(dispatchedAudit.detail, /raw plan: /, 'audit preserves the raw assignment block');
 });

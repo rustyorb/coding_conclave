@@ -2,15 +2,21 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readFile, stat } from 'node:fs/promises';
-import { detectAgents, buildAgentInvocation, flushAgentSummary, summarizeAgentEvent } from './lib/adapters.js';
+import { readFile, stat, mkdir } from 'node:fs/promises';
+import { MemoryDb } from './lib/memory-db.js';
+import { detectAgents, buildAgentInvocation, clearAgentSummary, flushAgentSummary, summarizeAgentEvent } from './lib/adapters.js';
 import { IDENTITY_BLOCK, validateIdentity } from './lib/identity.js';
 import { evaluateAutoApproval, validatePolicy } from './lib/policy.js';
 import { ProcessManager } from './lib/process-manager.js';
 import { failedDependencies, selectDependencyBlocked, unmetDependencies, validateDependencies } from './lib/scheduler.js';
-import { JsonStore } from './lib/store.js';
+import { applyIdleWatchdog, DEFAULT_IDLE_CHECK_MS, DEFAULT_IDLE_INTERVAL_MS } from './lib/idle-watchdog.js';
+import { deleteBoardTask } from './lib/task-deletion.js';
+import { JsonStore, queryHistory } from './lib/store.js';
+import { advanceRoomSummary, projectSummaryForApi } from './lib/room-summary.js';
+import { addMemorySource, createMemoryItem, ensureMemoryState, projectMemoryForApi, reviseMemoryItem, setMemoryItemPinned } from './lib/memory-ledger.js';
 import { inspectWorkspace } from './lib/workspace.js';
-import { clampText, id, now, publicError, readJsonBody } from './lib/utils.js';
+import { clampText, id, now, previewCommand, publicError, readJsonBody } from './lib/utils.js';
+import { assembleContext } from './lib/context-assembler.js';
 
 const sourceDir = path.dirname(fileURLToPath(import.meta.url));
 const projectDir = path.resolve(sourceDir, '..');
@@ -64,17 +70,54 @@ function routeMatch(pathname, expression) {
 
 // The API projection strips captured output from executions (each can hold up to
 // 120k chars) so /api/state stays small; full output is served per-execution.
+// `command` is also previewed here: records persisted before the creation-time
+// preview still hold the full prompt-bearing argv. `purpose` is previewed too —
+// it carries the full task objective or chat message text for agent runs.
+// Agent-write approval `command` fields get the same preview: they hold the full
+// prompt-bearing argv but are display-only (approval rebuilds the invocation via
+// startTask). `command`-type approvals are NOT previewed — that string executes
+// verbatim on approval, so the operator must see exactly what will run.
+// Size cap: previewCommand keeps 200 chars + a length marker, so every previewed
+// field projects to at most COMMAND_PREVIEW_CAP chars regardless of stored size.
 const STATE_EXECUTION_LIMIT = 200;
 const OUTPUT_TAIL_CHARS = 500;
+export const COMMAND_PREVIEW_CAP = 240;
 
-function projectStateForApi(state) {
+function projectStateForApi(state, { includeMemoryContent = true, memoryEngine = null } = {}) {
   const executionsTotal = state.executions.length;
   const executions = state.executions.slice(0, STATE_EXECUTION_LIMIT).map((execution) => {
     const { output, ...rest } = execution;
     const text = output || '';
-    return { ...rest, outputSize: text.length, outputTail: text.slice(-OUTPUT_TAIL_CHARS) };
+    return { ...rest, command: previewCommand(rest.command), purpose: previewCommand(rest.purpose), outputSize: text.length, outputTail: text.slice(-OUTPUT_TAIL_CHARS) };
   });
-  return { ...state, executions, executionsTotal };
+  const approvals = state.approvals.map((approval) => approval.type === 'agent-write'
+    ? { ...approval, command: previewCommand(approval.command) }
+    : approval);
+  // Rolling summary: project lean checkpoint metadata + full current rollup.
+  const summary = projectSummaryForApi(state.summary);
+  // Tier 3 ledger: items + provenance edges, without the revision history.
+  const projectedMemory = projectMemoryForApi(state.memory);
+  const memory = includeMemoryContent
+    ? { ...projectedMemory, locked: false }
+    : {
+        version: projectedMemory.version,
+        roomId: projectedMemory.roomId,
+        itemsTotal: projectedMemory.itemsTotal,
+        items: [],
+        sources: [],
+        locked: true
+      };
+  const safeSummary = includeMemoryContent || !summary?.rollup
+    ? summary
+    : { ...summary, rollup: { ...summary.rollup, content: null, locked: true } };
+  return { ...state, executions, executionsTotal, approvals, summary: safeSummary, memory, memoryEngine };
+}
+
+function memoryWorkspaceId(workspace) {
+  if (!workspace) return null;
+  let canonical = path.resolve(String(workspace));
+  if (process.platform === 'win32') canonical = canonical.toLowerCase();
+  return crypto.createHash('sha256').update(canonical).digest('hex').slice(0, 16);
 }
 
 function displayInvocation(invocation) {
@@ -98,7 +141,9 @@ function roleSuffix(state, agentId) {
 function identityLines(state, agent) {
   const lines = [];
   const roles = agentRoles(state, agent.id);
-  if (state.room.coordinatorId === agent.id) lines.push('You are this room’s Coordinator (advisory: you organize, the operator decides).');
+  if (state.room.coordinatorId === agent.id) {
+    lines.push('You are this room’s Coordinator. You can decompose work, assign tasks, and keep the room moving within its trust and access policy.');
+  }
   if (roles.length) lines.push(`Your roles in this room: ${roles.join(', ')}.`);
   if (state.room.coordinatorId && state.room.coordinatorId !== agent.id) {
     const coordinator = state.agents.find((entry) => entry.id === state.room.coordinatorId);
@@ -108,47 +153,60 @@ function identityLines(state, agent) {
 }
 
 function coordinatorPlanLines(state) {
-  const installed = state.agents.filter((entry) => entry.status === 'installed').map((entry) => entry.id);
+  const installed = state.agents.filter((entry) => entry.status === 'installed').map((entry) => {
+    const current = entry.currentTaskId && state.tasks.find((task) => task.id === entry.currentTaskId);
+    const availability = entry.activity === 'running'
+      ? `busy${current ? ` on “${current.title}”` : ''}`
+      : 'idle';
+    return `${entry.id} (${availability})`;
+  });
+  const unleashed = state.room.trust === 'unleashed';
   return [
     '',
-    'You hold no execution or approval authority. When the operator asks you to plan, organize, or delegate work, end your reply with one fenced plan block in exactly this format:',
+    'When the operator asks you to plan, organize, or delegate work, coordinate it by ending your reply with one fenced plan block in exactly this format:',
     '```conclave-plan',
     '[{"title": "Short imperative title", "objective": "What done means and what evidence is required", "agentId": "codex", "accessMode": "read-only", "priority": "high", "dependsOn": []}]',
     '```',
-    `Valid agentId values: ${installed.join(', ') || 'none available'}. accessMode is "read-only" or "workspace-write". priority is critical, high, medium, low, or none. dependsOn lists zero-based indexes of earlier tasks in the same plan. Propose at most ${PLAN_TASK_CAP} tasks.`,
-    'The block becomes proposed tasks in the operator’s Board Inbox; nothing runs until the operator approves each one. Never claim that tasks were created or that work happened.'
+    `Available agents: ${installed.join(', ') || 'none available'}. Prefer an idle agent when skills fit. accessMode is "read-only" or "workspace-write". priority is critical, high, medium, low, or none. dependsOn lists zero-based indexes of earlier tasks in the same plan. Assign at most ${PLAN_TASK_CAP} tasks.`,
+    unleashed
+      ? 'The block dispatches assigned Board tasks immediately under Unleashed room policy, including auto-approved workspace-write access.'
+      : 'The block creates assigned Board tasks immediately. Read-only tasks run when their assignees are idle; workspace-write tasks follow the room’s approval and autopilot policy.',
+    'Do not grant access, accept reviews, or change room settings. Report assignments as dispatched only after Conclave confirms the plan block.'
   ];
 }
 
-// Room history for prompts: newest-first walk under a character budget; lines
-// return oldest-first for reading. Budgets keep the combined prompt (history +
-// 12K operator message + scaffolding) near ~22K worst case — under the 32,767
-// CreateProcess limit for argv-passed prompts. Caveat: .cmd-shimmed CLIs run
-// through cmd.exe, whose ~8K line limit the operator-message clamp alone can
-// already exceed (pre-existing; the codex adapter avoids argv via stdin).
-export function transcriptLines(state, { excludeId, limit, clamp, budget }) {
-  const lines = [];
-  let used = 0;
-  for (let index = state.messages.length - 1; index >= 0 && lines.length < limit; index -= 1) {
-    const entry = state.messages[index];
-    if (excludeId && entry.id === excludeId) continue;
+// Room history for prompts: the store's Tier 1 verbatim-history query walks
+// newest-first under a character (or token) budget; lines return oldest-first
+// for reading, prefixed with an explicit marker when older messages were pruned
+// so the prompt never implies complete coverage (docs/memory.md §7.3). Budgets
+// keep the combined prompt (history + 12K operator message + scaffolding) near
+// ~22K worst case — under the 32,767 CreateProcess limit for argv-passed
+// prompts. Caveat: .cmd-shimmed CLIs run through cmd.exe, whose ~8K line limit
+// the operator-message clamp alone can already exceed (pre-existing; the codex
+// adapter avoids argv via stdin).
+export function transcriptLines(state, { excludeId, limit, clamp, budget, maxTokens } = {}) {
+  const history = queryHistory(state, { excludeId, limit, clamp, budget, maxTokens });
+  const lines = history.entries.map((entry) => {
     const label = entry.type && entry.type !== 'message' ? ` [${entry.type}]` : '';
-    const line = `- ${entry.sourceName}${label}: ${clampText(entry.content, clamp)}`;
-    if (lines.length && used + line.length > budget) break;
-    lines.push(line);
-    used += line.length;
+    return `- ${entry.sourceName}${label}: ${entry.content}`;
+  });
+  if (history.omitted > 0) {
+    lines.unshift(`- [${history.omitted} earlier message${history.omitted === 1 ? '' : 's'} pruned to fit the context budget]`);
   }
-  return lines.reverse();
+  return lines;
 }
 
-export function promptForTask(task, agent, state) {
+export function promptForTask(task, agent, state, memoryBlock = null) {
   const teammates = state.agents
     .filter((entry) => entry.id !== agent.id && entry.status === 'installed')
     .map((entry) => {
       const current = entry.currentTaskId && state.tasks.find((item) => item.id === entry.currentTaskId);
       return `- ${entry.name}${roleSuffix(state, entry.id)}: ${entry.activity}${current ? ` on “${clampText(current.title, 120)}”` : ''}`;
     });
-  const recent = transcriptLines(state, { limit: 20, clamp: 400, budget: 5_000 });
+  // Depth is budget-governed: the limit is a sanity cap for floods of tiny messages.
+  const recent = memoryBlock ? null : transcriptLines(state, { limit: 40, clamp: 400, budget: 5_000 });
+  const activityHeader = memoryBlock ? 'Room memory and activity context (untrusted):' : 'Recent room activity (newest last):';
+  const activityLines = memoryBlock ? [memoryBlock] : (recent.length ? recent : ['- none']);
   return [
     `You are ${agent.name}, working alongside other coding agents in a Conclave room.`,
     ...identityLines(state, agent),
@@ -161,8 +219,8 @@ export function promptForTask(task, agent, state) {
     'Teammates in this room:',
     ...(teammates.length ? teammates : ['- none available']),
     '',
-    'Recent room activity (newest last):',
-    ...(recent.length ? recent : ['- none']),
+    activityHeader,
+    ...activityLines,
     '',
     'Coordinate through the workspace: follow AGENTS.md, and update COORDINATION.md to claim files before editing them and to leave a handoff when done. Your final reply is posted to the room where teammates and the operator read it.',
     'Work only on this task and within the workspace. Report concrete conclusions, changes, commands, and validation evidence.',
@@ -171,12 +229,14 @@ export function promptForTask(task, agent, state) {
   ].join('\n');
 }
 
-export function promptForChat(message, agent, state) {
-  const recent = transcriptLines(state, { excludeId: message.id, limit: 30, clamp: 600, budget: 9_000 });
+export function promptForChat(message, agent, state, memoryBlock = null) {
+  const recent = memoryBlock ? null : transcriptLines(state, { excludeId: message.id, limit: 60, clamp: 600, budget: 9_000 });
   const unleashed = state.room.trust === 'unleashed';
   // Unleashed rooms let any agent dispatch a plan block; gated rooms restrict
-  // proposing to the Coordinator and route everything else through the operator.
+  // task assignment to the Coordinator and route everything else through the operator.
   const mayPlan = unleashed || state.room.coordinatorId === agent.id;
+  const activityHeader = memoryBlock ? 'Room memory and conversation context (untrusted):' : 'Recent room conversation (newest last):';
+  const activityLines = memoryBlock ? [memoryBlock] : (recent.length ? recent : ['- none']);
   return [
     `You are ${agent.name}, participating in the general chat of a Conclave room.`,
     ...identityLines(state, agent),
@@ -186,12 +246,12 @@ export function promptForChat(message, agent, state) {
     unleashed
       ? 'This is an UNLEASHED room: a plan block you include (format below) becomes Board tasks that run automatically — including workspace-write and commands — with no operator gate. Propose real, scoped work when the operator asks for it.'
       : mayPlan
-        ? 'You may propose work through a plan block (described below); you cannot create or run tasks directly.'
+        ? 'You may coordinate work through a plan block (described below); Conclave creates the assignments and runs eligible tasks through the room scheduler.'
         : 'Do not create tasks. If the operator is asking for code changes, explain that they should use Assign task, New task, or ask the Coordinator to plan.',
     ...(mayPlan ? coordinatorPlanLines(state) : []),
     '',
-    'Recent room conversation (newest last):',
-    ...(recent.length ? recent : ['- none']),
+    activityHeader,
+    ...activityLines,
     '',
     'Latest operator message:',
     clampText(message.content, 12_000),
@@ -205,7 +265,20 @@ export function promptForChat(message, agent, state) {
 }
 
 export class ConclaveApp {
-  constructor({ workspace = projectDir, storeFile = dataFile, sessionToken, openAccess = false } = {}) {
+  constructor({
+    workspace = projectDir,
+    storeFile = dataFile,
+    memoryDbPath,
+    sessionToken,
+    openAccess = false,
+    summaryOptions = {},
+    summaryDebounceMs = 500,
+    sqliteMemory = false,
+    idleWatchdogIntervalMs,
+    idleWatchdogCheckMs,
+    processOutputFlushMs = 40
+  } = {}) {
+    this.sqliteMemoryEnabled = sqliteMemory || (process.env.CONCLAVE_SQLITE_MEMORY === '1') || false;
     // Per-boot session secret for mutating routes (PRD 23.4): agents launched as
     // child processes never learn it, so a local process cannot decide approvals,
     // author policy, or assign roles. CONCLAVE_TOKEN pins it across restarts.
@@ -217,10 +290,64 @@ export class ConclaveApp {
     this.store = new JsonStore(storeFile, path.resolve(workspace));
     this.processes = new ProcessManager({ onEvent: (event) => this.onProcessEvent(event) });
     this.server = http.createServer((request, response) => this.handle(request, response));
+    // Rolling room summary (Tier 2 JSON bridge): deterministic producer, debounced.
+    this.summaryOptions = summaryOptions;
+    this.summaryDebounceMs = summaryDebounceMs;
+    this._summaryTimer = null;
+    this._summaryRefreshChain = Promise.resolve();
+    this._closed = false;
+    this.memoryDb = null;
+    this.memorySyncHealthy = false;
+    // The sidecar follows CONCLAVE_STATE instead of the mutable workspace. This
+    // keeps the JSON source of truth and its rebuildable index together.
+    this.memoryDbPath = memoryDbPath || path.join(path.dirname(path.resolve(storeFile)), 'memory.db');
+    // Idle watchdog: periodic Board wake when nothing has run/queued recently.
+    // CONCLAVE_IDLE_INTERVAL_MS=0 disables. Defaults follow OpenClaw-style cadence.
+    const envInterval = Number(process.env.CONCLAVE_IDLE_INTERVAL_MS);
+    const envCheck = Number(process.env.CONCLAVE_IDLE_CHECK_MS);
+    this.idleWatchdogIntervalMs = idleWatchdogIntervalMs ?? (Number.isFinite(envInterval) ? envInterval : DEFAULT_IDLE_INTERVAL_MS);
+    this.idleWatchdogCheckMs = idleWatchdogCheckMs ?? (Number.isFinite(envCheck) ? envCheck : DEFAULT_IDLE_CHECK_MS);
+    this._idleWatchdogTimer = null;
+    this._idleWatchdogChain = Promise.resolve();
+    // Agent CLIs can emit hundreds of lines in a burst. Keep those lines in
+    // arrival order, but persist them as one short batch so operator messages
+    // do not queue behind one full-state rewrite per line.
+    this.processOutputFlushMs = Math.max(0, Number(processOutputFlushMs) || 0);
+    this._processOutputBatch = null;
+    this._processOutputChain = Promise.resolve();
   }
 
   async initialize() {
     await this.store.load();
+    if (this.sqliteMemoryEnabled) {
+      const dbPath = this.memoryDbPath;
+      try {
+        if (dbPath !== ':memory:') {
+          await mkdir(path.dirname(dbPath), { recursive: true });
+        }
+        this.memoryDb = new MemoryDb(dbPath);
+        this.memoryDb.init();
+        await this.syncStateToSqlite();
+        const originalUpdate = this.store.update.bind(this.store);
+        this.store.update = async (mutator) => {
+          const result = await originalUpdate(mutator);
+          try {
+            await this.syncStateToSqlite();
+          } catch (error) {
+            this.memorySyncHealthy = false;
+            console.error('SQLite memory sync failed; prompt recall remains disabled until a clean sync:', publicError(error));
+          }
+          return result;
+        };
+      } catch (error) {
+        this.memorySyncHealthy = false;
+        if (this.memoryDb) {
+          try { this.memoryDb.close(); } catch {}
+          this.memoryDb = null;
+        }
+        console.error('SQLite memory initialization failed; using JSON transcript fallback:', publicError(error));
+      }
+    }
     const verifiedAgents = new Set(this.store.state.executions
       .filter((execution) => ['agent', 'chat'].includes(execution.kind) && execution.status === 'completed')
       .map((execution) => execution.agentId));
@@ -255,7 +382,278 @@ export class ConclaveApp {
           : 'Conclave restarted while this chat turn was queued.';
         turn.updatedAt = now();
       });
+      // Catch up rollup/checkpoints after restart without blocking load.
+      advanceRoomSummary(state, this.summaryOptions);
     });
+    this.startIdleWatchdog();
+  }
+
+  startIdleWatchdog() {
+    this.stopIdleWatchdog();
+    if (!(this.idleWatchdogIntervalMs > 0) || !(this.idleWatchdogCheckMs > 0)) return;
+    this._idleWatchdogTimer = setInterval(() => {
+      this._idleWatchdogChain = this._idleWatchdogChain
+        .then(() => this.tickIdleWatchdog())
+        .catch((error) => console.error('Idle watchdog failed:', publicError(error)));
+    }, this.idleWatchdogCheckMs);
+    if (typeof this._idleWatchdogTimer.unref === 'function') this._idleWatchdogTimer.unref();
+  }
+
+  stopIdleWatchdog() {
+    if (this._idleWatchdogTimer) {
+      clearInterval(this._idleWatchdogTimer);
+      this._idleWatchdogTimer = null;
+    }
+  }
+
+  // Detect Board silence, re-queue recoverable restart-blocked work, announce,
+  // and kick the FIFO drainer. Safe to call from tests without waiting on the timer.
+  async tickIdleWatchdog() {
+    if (this._closed) return { acted: false, reason: 'closed' };
+    const result = await this.store.update((state) => applyIdleWatchdog(state, {
+      idleIntervalMs: this.idleWatchdogIntervalMs,
+      nowMs: Date.now(),
+      nowIso: now()
+    }));
+    if (!result?.acted) return result ?? { acted: false, reason: 'no-result' };
+    this.broadcast({ type: 'state.changed', reason: 'idle-watchdog.fired', createdAt: now() });
+    await this.startQueuedTasks();
+    return result;
+  }
+
+  async syncStateToSqlite() {
+    const state = this.store.snapshot();
+    const db = this.memoryDb;
+    if (!db) throw new Error('SQLite memory sidecar is unavailable');
+
+    db.transaction(() => {
+      // 1. Sync Workspace
+      const wsPath = state.room?.workspace;
+      const wsId = memoryWorkspaceId(wsPath) || 'default-ws';
+      db.saveWorkspace({
+        id: wsId,
+        name: state.room?.name ? `${state.room.name} Workspace` : 'Room Workspace',
+        path: wsPath || '',
+        repositoryIdentity: state.workspace?.repositoryIdentity || 'repo-id'
+      });
+
+      // 2. Sync Room
+      db.saveRoom({
+        id: state.room?.id || 'room-id',
+        name: state.room?.name || 'Engineering Room',
+        workspaceId: wsId
+      });
+
+      // 3. Sync Messages
+      const messages = Array.isArray(state.messages) ? state.messages : [];
+      for (const msg of messages) {
+        db.saveMessage({
+          id: msg.id,
+          roomId: state.room?.id || 'room-id',
+          sequence: msg.seq,
+          sourceType: msg.source === 'system' ? 'system' : msg.source === 'user' ? 'user' : 'agent',
+          sourceId: msg.sourceId || msg.sourceName || 'actor',
+          sourceNameSnapshot: msg.sourceName || msg.source,
+          type: msg.type || 'message',
+          content: msg.content,
+          contentHash: msg.contentHash || crypto.createHash('sha256').update(msg.content).digest('hex'),
+          revision: msg.revision || 1,
+          parentMessageId: msg.parentMessageId || null,
+          threadRootId: msg.threadRootId || null,
+          taskId: msg.taskId || null,
+          chatTurnId: msg.chatTurnId || null,
+          executionId: msg.executionId || null,
+          correlationId: msg.correlationId || null,
+          causationId: msg.causationId || null,
+          createdAt: msg.createdAt,
+          timestampStatus: msg.timestampStatus || 'valid',
+          finalizedAt: msg.finalizedAt || null,
+          redactionState: msg.redactionState || 'none',
+          deletedAt: msg.deletedAt || null
+        });
+      }
+
+      // 4. Sync Summary Checkpoints and Rollups
+      const summary = state.summary;
+      if (summary) {
+        if (Array.isArray(summary.checkpoints)) {
+          for (const cp of summary.checkpoints) {
+            db.saveCheckpoint({
+              id: cp.id,
+              roomId: state.room?.id || 'room-id',
+              revision: cp.revision || 1,
+              status: cp.status || 'current',
+              fromSequenceExclusive: cp.fromIndexExclusive || 0,
+              throughSequenceInclusive: cp.throughIndexInclusive || 0,
+              sourceDigest: cp.sourceDigest || 'digest',
+              content: cp.content || '',
+              contentHash: cp.contentHash || crypto.createHash('sha256').update(cp.content || '').digest('hex'),
+              producerType: cp.producerType || 'system',
+              producerId: cp.producerId || 'conclave',
+              generatedAt: cp.generatedAt || now(),
+              staleReason: cp.staleReason || null
+            });
+          }
+        }
+        if (summary.rollup) {
+          const rollup = summary.rollup;
+          db.saveRollup({
+            id: rollup.id,
+            roomId: state.room?.id || 'room-id',
+            revision: rollup.revision || 1,
+            status: rollup.status || 'current',
+            throughSequenceInclusive: rollup.throughSequenceInclusive || 0,
+            structuredStateDigest: rollup.structuredStateDigest || 'state-dig',
+            ledgerDigest: rollup.ledgerDigest || 'ledger-dig',
+            content: rollup.content || '',
+            contentHash: rollup.contentHash || crypto.createHash('sha256').update(rollup.content || '').digest('hex'),
+            producerType: rollup.producerType || 'system',
+            producerId: rollup.producerId || 'conclave',
+            generatedAt: rollup.generatedAt || now(),
+            staleReason: rollup.staleReason || null
+          });
+        }
+      }
+
+      // 5. Sync Curated Memory Items
+      const memory = state.memory;
+      if (memory) {
+        const items = Array.isArray(memory.items) ? memory.items : [];
+        const existingIds = new Set(items.map(item => item.id));
+
+        // Purge items from SQLite that are deleted in state. A failure here is
+        // privacy-significant, so it must disable recall instead of being hidden.
+        const dbItemIds = db.db.prepare('SELECT id FROM memory_items WHERE roomId = ?').all(state.room?.id || 'room-id').map(row => row.id);
+        for (const id of dbItemIds) {
+          if (!existingIds.has(id)) {
+            db.deleteNode(id);
+          }
+        }
+
+        for (const item of items) {
+          db.rememberNode({
+            id: item.id,
+            roomId: state.room?.id || 'room-id',
+            workspaceId: item.workspaceId || wsId,
+            kind: item.kind,
+            title: item.title,
+            statement: item.statement,
+            status: item.status,
+            scope: item.scope || 'room',
+            pinned: item.pinned === true,
+            applicability: item.applicability || null,
+            authorType: item.authorType || 'operator',
+            authorId: item.authorId || 'operator',
+            ownerId: item.ownerId || null,
+            confidenceLabel: item.confidenceLabel || null,
+            supportState: item.supportState || 'available',
+            verificationRuleId: item.verificationRuleId || null,
+            validFrom: item.validFrom || null,
+            reviewAfter: item.reviewAfter || null,
+            expiresAt: item.expiresAt || null,
+            supersedesItemId: item.supersedesItemId || null,
+            supersededByItemId: item.supersededByItemId || null,
+            version: item.version || 1,
+            createdAt: item.createdAt || now(),
+            updatedAt: item.updatedAt || now()
+          });
+        }
+
+        const revisions = Array.isArray(memory.itemRevisions) ? memory.itemRevisions : [];
+        for (const rev of revisions) {
+          if (!existingIds.has(rev.itemId)) {
+            continue;
+          }
+          const stmtCheck = db.db.prepare('SELECT id FROM memory_item_revisions WHERE itemId = ? AND version = ?');
+          const exists = stmtCheck.get(rev.itemId, rev.version);
+          if (!exists) {
+            const stmtInsert = db.db.prepare(`
+              INSERT INTO memory_item_revisions (itemId, version, title, statement, status, actorId, reason, createdAt)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `);
+            stmtInsert.run(
+              rev.itemId,
+              rev.version,
+              rev.title || '',
+              rev.statement || '',
+              rev.status || 'proposed',
+              rev.actor || 'operator',
+              rev.reason || 'synced',
+              rev.createdAt || now()
+            );
+          }
+        }
+
+        const sources = Array.isArray(memory.sources) ? memory.sources : [];
+        for (const src of sources) {
+          const stmtCheck = db.db.prepare('SELECT id FROM memory_sources WHERE itemId = ? AND sourceId = ?');
+          const exists = stmtCheck.get(src.itemId, src.messageId || src.sourceId);
+          if (!exists) {
+            db.addNodeSource({
+              itemId: src.itemId,
+              sourceType: src.type || 'message',
+              sourceId: src.messageId || src.sourceId,
+              sourceRevision: src.messageRevision || src.sourceRevision || 1,
+              sourceHash: src.contentHash || src.sourceHash || '',
+              excerpt: src.excerpt || '',
+              supportRole: src.supportRole || 'required',
+              supportState: src.supportState || 'available',
+              supportChangedAt: src.supportChangedAt || now(),
+              supportChangeReason: src.supportChangeReason || null
+            });
+          }
+        }
+
+        const connections = Array.isArray(memory.connections) ? memory.connections : [];
+        for (const conn of connections) {
+          db.connectNodes(conn.sourceId, conn.targetId, conn.relationship);
+        }
+      }
+    });
+    this.memorySyncHealthy = true;
+  }
+
+  /**
+   * Schedule an incremental room-summary refresh. Message persistence never waits
+   * on this work; failures leave lastError on state.summary and keep history usable.
+   */
+  scheduleSummaryRefresh(reason = 'activity') {
+    if (this._closed) return;
+    if (this._summaryTimer) clearTimeout(this._summaryTimer);
+    const delay = Math.max(0, this.summaryDebounceMs);
+    this._summaryTimer = setTimeout(() => {
+      this._summaryTimer = null;
+      if (this._closed) return;
+      this._summaryRefreshChain = this._summaryRefreshChain
+        .catch(() => {})
+        .then(() => this.refreshRoomSummary(reason));
+    }, delay);
+    if (typeof this._summaryTimer.unref === 'function') this._summaryTimer.unref();
+  }
+
+  async refreshRoomSummary(reason = 'activity') {
+    if (this._closed) return false;
+    let changed = false;
+    try {
+      changed = await this.store.update((state) => advanceRoomSummary(state, this.summaryOptions));
+    } catch (error) {
+      // Store queue failures are already logged; never surface to message paths.
+      // Skip noise when shutting down or the state file path vanished mid-write (tests/teardown).
+      if (!this._closed && error?.code !== 'ENOENT') {
+        console.error('room summary refresh failed:', error?.message || error);
+      }
+      return false;
+    }
+    if (this._closed) return false;
+    if (changed) {
+      this.broadcast({
+        type: 'state.changed',
+        reason: 'summary.updated',
+        summaryReason: reason,
+        createdAt: now()
+      });
+    }
+    return changed;
   }
 
   broadcast(event) {
@@ -263,12 +661,49 @@ export class ConclaveApp {
     for (const client of this.clients) client.write(payload);
   }
 
-  async onProcessEvent(event) {
-    await this.store.update(async (state) => {
-      if (event.type === 'execution.started') {
-        state.executions.unshift(event.execution);
-      }
-      if (event.type === 'execution.output') {
+  queueProcessOutput(event) {
+    let batch = this._processOutputBatch;
+    if (!batch) {
+      let resolve;
+      let reject;
+      const promise = new Promise((onResolve, onReject) => {
+        resolve = onResolve;
+        reject = onReject;
+      });
+      batch = { events: [], promise, resolve, reject, timer: null };
+      this._processOutputBatch = batch;
+      batch.timer = setTimeout(() => this.startProcessOutputFlush(batch), this.processOutputFlushMs);
+    }
+    batch.events.push(event);
+    return batch.promise;
+  }
+
+  startProcessOutputFlush(batch) {
+    if (this._processOutputBatch === batch) this._processOutputBatch = null;
+    if (batch.timer) clearTimeout(batch.timer);
+    batch.timer = null;
+    const operation = this._processOutputChain.then(() => this.persistProcessOutputs(batch.events));
+    // A failed persistence attempt must reject the callers for this batch, but
+    // it must not poison later batches (the JsonStore queue has the same rule).
+    this._processOutputChain = operation.catch(() => {});
+    operation.then(batch.resolve, batch.reject);
+    return operation;
+  }
+
+  async flushProcessOutput() {
+    const batch = this._processOutputBatch;
+    if (batch) {
+      this.startProcessOutputFlush(batch);
+      await batch.promise;
+      return;
+    }
+    await this._processOutputChain;
+  }
+
+  async persistProcessOutputs(events) {
+    if (!events.length) return;
+    await this.store.update((state) => {
+      for (const event of events) {
         const execution = state.executions.find((entry) => entry.id === event.executionId);
         const chatTurn = state.chatTurns.find((entry) => entry.executionId === event.executionId);
         if (execution) execution.output = clampText(`${execution.output}${event.stream === 'stderr' ? '[stderr] ' : ''}${event.line}\n`, 120_000);
@@ -288,13 +723,48 @@ export class ConclaveApp {
             }
           }
         }
+        state.audit.push({
+          id: id('audit'), type: event.type, executionId: event.executionId,
+          taskId: event.taskId, chatTurnId: chatTurn?.id, createdAt: now()
+        });
+      }
+      if (state.audit.length > 2_000) state.audit.splice(0, state.audit.length - 2_000);
+    });
+    const last = events.at(-1);
+    const executionIds = [...new Set(events.map((event) => event.executionId).filter(Boolean))];
+    this.broadcast({
+      type: 'state.changed', reason: 'execution.output', batchSize: events.length,
+      executionId: executionIds.length === 1 ? executionIds[0] : undefined,
+      executionIds, createdAt: last.createdAt || now()
+    });
+    this.scheduleSummaryRefresh('execution.output');
+  }
+
+  async onProcessEvent(event) {
+    if (event.type === 'execution.output') return this.queueProcessOutput(event);
+    // A lifecycle event must never overtake buffered output from the same child.
+    // Draining the shared batch also preserves arrival order across concurrent runs.
+    await this.flushProcessOutput();
+    await this.store.update(async (state) => {
+      if (event.type === 'execution.started') {
+        state.executions.unshift(event.execution);
+      }
+      if (event.type === 'execution.cancelling') {
+        const execution = state.executions.find((entry) => entry.id === event.executionId);
+        if (execution?.agentId) clearAgentSummary(execution.agentId);
       }
       if (event.type === 'execution.finished') {
         const execution = state.executions.find((entry) => entry.id === event.executionId);
         const chatTurn = state.chatTurns.find((entry) => entry.executionId === event.executionId);
         // Plain-text agents (agy) buffer their whole run; land it as one
         // message here so fenced blocks parse and the feed gets one entry.
-        const flushedSummary = event.agentId ? flushAgentSummary(event.agentId) : null;
+        // A cancelled Grok run is discarded instead: clear once when cancellation
+        // starts and again here in case the dying child emitted late text.
+        let flushedSummary = null;
+        if (event.agentId) {
+          if (event.status === 'cancelled') clearAgentSummary(event.agentId);
+          else flushedSummary = flushAgentSummary(event.agentId);
+        }
         if (flushedSummary) {
           const flushAgent = state.agents.find((entry) => entry.id === event.agentId);
           state.messages.push({
@@ -416,6 +886,8 @@ export class ConclaveApp {
       chatTurnId: chatTurn?.id,
       createdAt: event.createdAt || event.finishedAt || event.execution?.startedAt || now()
     });
+    // Finish paths often append messages; refresh rollup asynchronously.
+    if (event.type === 'execution.finished') this.scheduleSummaryRefresh(event.type);
     if (event.type === 'execution.finished') await this.startQueuedTasks();
   }
 
@@ -457,6 +929,10 @@ export class ConclaveApp {
       const busyAgents = new Set(state.agents.filter((entry) => entry.activity === 'running').map((entry) => entry.id));
       const writerActive = state.tasks.some((entry) => entry.status === 'active' && entry.accessMode === 'workspace-write');
       const tasksById = new Map(state.tasks.map((entry) => [entry.id, entry]));
+      const messageSequence = new Map(state.messages.map((entry, index) => [entry.id,
+        Number.isSafeInteger(entry.seq) ? entry.seq : index + 1]));
+      const taskFallbackOrder = new Map([...state.tasks].reverse().map((entry, index) => [entry.id, index]));
+      const chatFallbackOrder = new Map([...state.chatTurns].reverse().map((entry, index) => [entry.id, index]));
       const candidates = [
         ...state.tasks.filter((entry) => entry.status === 'ready'
           && !attempted.has(`task:${entry.id}`)
@@ -468,7 +944,24 @@ export class ConclaveApp {
           && !attempted.has(`chat:${entry.id}`)
           && !busyAgents.has(entry.agentId))
           .map((entry) => ({ kind: 'chat', entry }))
-      ].sort((left, right) => left.entry.createdAt.localeCompare(right.entry.createdAt));
+      ].sort((left, right) => {
+        // `updatedAt` is the time an entry most recently joined the runnable
+        // queue. A failed task retry therefore goes behind chats that were
+        // already waiting, instead of monopolizing its agent via old createdAt.
+        const queuedAt = String(left.entry.updatedAt || left.entry.createdAt || '')
+          .localeCompare(String(right.entry.updatedAt || right.entry.createdAt || ''));
+        if (queuedAt) return queuedAt;
+        if (left.kind === 'chat' && right.kind === 'chat') {
+          const messageOrder = (messageSequence.get(left.entry.messageId) ?? Number.MAX_SAFE_INTEGER)
+            - (messageSequence.get(right.entry.messageId) ?? Number.MAX_SAFE_INTEGER);
+          if (messageOrder) return messageOrder;
+          const recipientOrder = (left.entry.recipientIndex ?? 0) - (right.entry.recipientIndex ?? 0);
+          if (recipientOrder) return recipientOrder;
+          return (chatFallbackOrder.get(left.entry.id) ?? 0) - (chatFallbackOrder.get(right.entry.id) ?? 0);
+        }
+        if (left.kind !== right.kind) return left.kind === 'chat' ? -1 : 1;
+        return (taskFallbackOrder.get(left.entry.id) ?? 0) - (taskFallbackOrder.get(right.entry.id) ?? 0);
+      });
       const queued = candidates[0];
       if (!queued) return;
       attempted.add(`${queued.kind}:${queued.entry.id}`);
@@ -536,9 +1029,29 @@ export class ConclaveApp {
       this.broadcast({ type: 'state.changed', reason: 'task.queued', taskId });
       return null;
     }
+    let memoryBlock = null;
+    if (this.sqliteMemoryEnabled && this.memorySyncHealthy && this.memoryDb) {
+      try {
+        const workspaceId = memoryWorkspaceId(state.room?.workspace);
+        const marker = '__CONCLAVE_MEMORY_CONTEXT__';
+        const nonMemoryLength = promptForTask(task, agent, state, marker).length - marker.length;
+        const res = assembleContext(this.memoryDb, {
+          roomId: state.room.id,
+          workspaceId,
+          queryText: task.objective || task.title,
+          maxCharacters: 24000,
+          executionId: taskId,
+          nonMemoryLength
+        });
+        memoryBlock = res.memoryBlock;
+        this.memoryDb.saveContextReceipt(res.receipt, res.entries);
+      } catch (err) {
+        console.error("Context assembly failed, fallback to JSON verbatim:", err);
+      }
+    }
     const invocation = buildAgentInvocation(agent.id, {
       executable: agent.executable,
-      prompt: promptForTask(task, agent, state),
+      prompt: promptForTask(task, agent, state, memoryBlock),
       workspace: state.room.workspace,
       accessMode: task.accessMode,
       elevated: state.room.trust === 'unleashed'
@@ -612,9 +1125,30 @@ export class ConclaveApp {
     if (waitReason) return null;
     const message = state.messages.find((entry) => entry.id === turn.messageId);
     if (!message) throw new Error('Chat message not found');
+    let memoryBlock = null;
+    if (this.sqliteMemoryEnabled && this.memorySyncHealthy && this.memoryDb) {
+      try {
+        const workspaceId = memoryWorkspaceId(state.room?.workspace);
+        const marker = '__CONCLAVE_MEMORY_CONTEXT__';
+        const nonMemoryLength = promptForChat(message, agent, state, marker).length - marker.length;
+        const res = assembleContext(this.memoryDb, {
+          roomId: state.room.id,
+          workspaceId,
+          queryText: message.content,
+          excludeMessageId: message.id,
+          maxCharacters: 24000,
+          executionId: chatTurnId,
+          nonMemoryLength
+        });
+        memoryBlock = res.memoryBlock;
+        this.memoryDb.saveContextReceipt(res.receipt, res.entries);
+      } catch (err) {
+        console.error("Context assembly failed, fallback to JSON verbatim:", err);
+      }
+    }
     const invocation = buildAgentInvocation(agent.id, {
       executable: agent.executable,
-      prompt: promptForChat(message, agent, state),
+      prompt: promptForChat(message, agent, state, memoryBlock),
       workspace: state.room.workspace,
       accessMode: 'read-only'
     });
@@ -663,7 +1197,7 @@ export class ConclaveApp {
     const createdAt = now();
     const turn = {
       id: id('chat'), messageId: message.id, agentId: agent.id, status: 'queued',
-      blocker: null, executionId: null, retryOf, createdAt, updatedAt: createdAt
+      blocker: null, executionId: null, retryOf, recipientIndex: 0, createdAt, updatedAt: createdAt
     };
     await this.store.update((state) => {
       state.chatTurns.unshift(turn);
@@ -675,8 +1209,8 @@ export class ConclaveApp {
   }
 
   // Turns a completed chat turn's ```conclave-plan``` block into Board tasks.
-  // Gated rooms: only the Coordinator may propose, tasks land 'proposed' and
-  // wait for the operator to Mark ready — advisory, no approvals, nothing runs.
+  // Gated rooms: only the Coordinator may assign work. Read-only tasks land
+  // 'ready'; write tasks request approval and follow the configured policy.
   // Unleashed rooms: ANY agent may propose, tasks land 'ready' (write tasks get
   // an auto-approved write approval) and the drainer runs them. Runs inside
   // store.update. Non-coordinator plan blocks in gated rooms are inert text.
@@ -723,7 +1257,9 @@ export class ConclaveApp {
           priority: ['critical', 'high', 'medium', 'low', 'none'].includes(entry.priority) ? entry.priority : 'none',
           origin: 'coordinator', proposedBy: chatTurn.agentId,
           source: { messageId: message.id, sourceName: message.sourceName, content: clampText(message.content, 2_000), createdAt: message.createdAt },
-          archivedAt: null, status: unleashed ? 'ready' : 'proposed', dependencies: [], attempts: 0,
+          archivedAt: null,
+          status: entry.accessMode === 'workspace-write' && !unleashed ? 'waiting' : 'ready',
+          dependencies: [], attempts: 0,
           blocker: null, executionId: null, createdAt, updatedAt: createdAt
         }
       });
@@ -744,34 +1280,47 @@ export class ConclaveApp {
       entry.task.dependencies = kept;
     }
     state.tasks.unshift(...accepted.map((entry) => entry.task).reverse());
-    // Unleashed: give write tasks an auto-approved approval up front so the
-    // drainer (called after this handler) can run them without a gate.
-    if (unleashed) {
-      for (const { task } of accepted) {
-        if (task.accessMode !== 'workspace-write') continue;
-        const agent = state.agents.find((entry) => entry.id === task.agentId);
-        const approval = this.buildWriteApproval(state, task, agent);
-        state.approvals.unshift(approval);
+    // Write assignments always carry an approval record. Unleashed rooms approve
+    // it directly; gated rooms apply the operator-authored autopilot policy and
+    // otherwise leave the task waiting for a human decision.
+    for (const { task } of accepted) {
+      if (task.accessMode !== 'workspace-write') continue;
+      const agent = state.agents.find((entry) => entry.id === task.agentId);
+      const approval = this.buildWriteApproval(state, task, agent);
+      state.approvals.unshift(approval);
+      if (unleashed) {
         this.recordAutoApproval(state, approval, {
           reason: 'unleashed room auto-approves plan write access', taskId: task.id, agentId: agent.id,
+          subject: `workspace-write for ${agent.name} on “${task.title}”`
+        });
+        continue;
+      }
+      const verdict = evaluateAutoApproval(state, approval, { running: this.processes.running.size });
+      if (verdict.code === 'rate-capped') {
+        state.audit.push({ id: id('audit'), type: 'autopilot.rate-capped', approvalId: approval.id, createdAt: now() });
+      }
+      if (verdict.allow) {
+        task.status = 'ready';
+        this.recordAutoApproval(state, approval, {
+          reason: verdict.reason, taskId: task.id, agentId: agent.id,
           subject: `workspace-write for ${agent.name} on “${task.title}”`
         });
       }
     }
     const proposer = coordinator?.name ?? chatTurn.agentId;
-    message.content = message.content.replace(PLAN_BLOCK, unleashed
-      ? `[Dispatched ${accepted.length} task${accepted.length === 1 ? '' : 's'} to the Board]`
-      : `[Proposed ${accepted.length} task${accepted.length === 1 ? '' : 's'} — review them in the Board Inbox]`);
+    const verb = unleashed ? 'Dispatched' : 'Assigned';
+    message.content = message.content.replace(PLAN_BLOCK,
+      `[${verb} ${accepted.length} task${accepted.length === 1 ? '' : 's'} to the Board]`);
     state.audit.push({
-      id: id('audit'), type: unleashed ? 'plan.dispatched' : 'plan.proposed', chatTurnId: chatTurn.id, agentId: chatTurn.agentId,
-      detail: clampText(`${unleashed ? 'dispatched' : 'proposed'} ${accepted.length}${skipped.length ? `; skipped: ${skipped.join('; ')}` : ''}; raw plan: ${block[0]}`, 8_000),
+      id: id('audit'), type: 'plan.dispatched', chatTurnId: chatTurn.id, agentId: chatTurn.agentId,
+      detail: clampText(`${verb.toLowerCase()} ${accepted.length}${skipped.length ? `; skipped: ${skipped.join('; ')}` : ''}; raw plan: ${block[0]}`, 8_000),
       createdAt: now()
     });
     state.messages.push({
       id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'system',
       content: clampText(unleashed
         ? `${proposer} dispatched ${accepted.length} task${accepted.length === 1 ? '' : 's'} to the Board — they run automatically (unleashed room).${skipped.length ? ` Skipped: ${skipped.join('; ')}.` : ''}`
-        : `${proposer} proposed ${accepted.length} task${accepted.length === 1 ? '' : 's'} — they are waiting in the Board Inbox for your review.${skipped.length ? ` Skipped: ${skipped.join('; ')}.` : ''}`, 2_000),
+        : `${proposer} assigned ${accepted.length} task${accepted.length === 1 ? '' : 's'} to the Board. Eligible tasks run as assignees become idle; workspace-write tasks remain approval-gated unless room policy approved them.${skipped.length ? ` Skipped: ${skipped.join('; ')}.` : ''}`, 2_000),
       chatTurnId: chatTurn.id, createdAt: now()
     });
   }
@@ -818,11 +1367,17 @@ export class ConclaveApp {
 
   // Fresh pending workspace-write approval for a task. Runs inside store.update.
   buildWriteApproval(state, task, agent) {
+    // Approval previews deliberately exclude recalled memory. The live prompt is
+    // assembled from the then-current snapshot only after approval, preventing a
+    // second durable copy of recalled bodies in state.json approval history.
     const preview = buildAgentInvocation(agent.id, {
       executable: agent.executable,
       prompt: promptForTask(task, agent, state),
       workspace: state.room.workspace,
-      accessMode: task.accessMode
+      accessMode: task.accessMode,
+      // This only renders the approval command; an active Grok stream must keep
+      // its accumulator until the real invocation starts or is cancelled.
+      resetSummary: false
     });
     return {
       id: id('approval'), type: 'agent-write', status: 'pending', taskId: task.id, agentId: agent.id,
@@ -971,7 +1526,16 @@ export class ConclaveApp {
 
   async handleApi(request, response, url) {
     if (request.method === 'GET' && url.pathname === '/api/state') {
-      return json(response, 200, projectStateForApi(this.store.snapshot()));
+      return json(response, 200, projectStateForApi(this.store.snapshot(), {
+        includeMemoryContent: this.hasExplicitSessionAuthority(request),
+        memoryEngine: {
+          sqliteEnabled: this.sqliteMemoryEnabled,
+          recallHealthy: this.sqliteMemoryEnabled && this.memorySyncHealthy && Boolean(this.memoryDb),
+          retrieval: this.sqliteMemoryEnabled ? 'lexical-only' : 'json-transcript-fallback',
+          semanticEnabled: false,
+          backupRestoreEnabled: false
+        }
+      }));
     }
     const outputMatch = routeMatch(url.pathname, /^\/api\/executions\/([^/]+)\/output$/);
     if (request.method === 'GET' && outputMatch) {
@@ -1006,17 +1570,47 @@ export class ConclaveApp {
       const recipients = requestedIds.map((agentId) => this.store.state.agents.find((agent) => agent.id === agentId));
       if (recipients.some((agent) => !agent)) throw new Error('Select a supported agent');
       if (recipients.some((agent) => agent.status !== 'installed')) throw new Error('A selected agent is unavailable');
-      const maxTurns = this.store.state.room.limits.maxTurnsPerAgent;
-      const saturated = recipients.find((agent) => this.store.state.chatTurns.filter((turn) =>
-        turn.agentId === agent.id && ['active', 'queued'].includes(turn.status)).length >= maxTurns);
-      if (saturated) throw new Error(`${saturated.name} already has ${maxTurns} chat replies pending`);
-      const message = { id: id('msg'), source: 'user', sourceName: 'You', type: 'message', content, createdAt: now() };
-      await this.store.update((state) => state.messages.push(message));
-      for (const agent of recipients) {
-        await this.createChatTurn(message, agent);
-      }
-      this.broadcast({ type: 'state.changed', reason: 'message.created', messageId: message.id });
-      return json(response, 201, { message, tasksCreated: 0, chatTurnsCreated: recipients.length });
+      const createdAt = now();
+      const message = { id: id('msg'), source: 'user', sourceName: 'You', type: 'message', content, createdAt };
+      const turns = recipients.map((agent, recipientIndex) => ({
+        id: id('chat'), messageId: message.id, agentId: agent.id, status: 'queued',
+        blocker: null, executionId: null, retryOf: null, recipientIndex, createdAt, updatedAt: createdAt
+      }));
+      // Preserve room chronology: output that arrived before this request lands
+      // first, but as at most one coalesced write rather than one write per line.
+      await this.flushProcessOutput();
+      // Admission is one serialized commit: an output burst can delay at most
+      // this single write, and clients never observe a message without all of
+      // its requested reply turns (or a partial recipient set).
+      await this.store.update((state) => {
+        const maxTurns = state.room.limits.maxTurnsPerAgent;
+        for (const agent of recipients) {
+          const liveAgent = state.agents.find((entry) => entry.id === agent.id);
+          if (!liveAgent) throw new Error('Select a supported agent');
+          if (liveAgent.status !== 'installed') throw new Error('A selected agent is unavailable');
+          const pending = state.chatTurns.filter((turn) =>
+            turn.agentId === agent.id && ['active', 'queued'].includes(turn.status)).length;
+          if (pending >= maxTurns) throw new Error(`${liveAgent.name} already has ${maxTurns} chat replies pending`);
+        }
+        state.messages.push(message);
+        state.chatTurns.unshift(...turns);
+        for (const turn of turns) {
+          state.audit.push({
+            id: id('audit'), type: 'chat.created', chatTurnId: turn.id,
+            agentId: turn.agentId, createdAt
+          });
+        }
+      });
+      this.scheduleSummaryRefresh('message.created');
+      this.broadcast({
+        type: 'state.changed', reason: 'message.created', messageId: message.id,
+        chatTurnIds: turns.map((turn) => turn.id)
+      });
+      json(response, 201, { message, tasksCreated: 0, chatTurnsCreated: turns.length });
+      // The durable 201 is independent of prompt construction and process
+      // launch. The drainer still performs atomic capacity reservations.
+      void this.startQueuedTasks().catch((error) => console.error('chat queue drain failed:', publicError(error)));
+      return;
     }
     const promoteMatch = routeMatch(url.pathname, /^\/api\/messages\/([^/]+)\/promote$/);
     if (request.method === 'POST' && promoteMatch) {
@@ -1086,6 +1680,87 @@ export class ConclaveApp {
       this.broadcast({ type: 'state.changed', reason: 'identity.updated', agentId: agent.id });
       return json(response, 200, { identity: this.store.state.identities[agent.id] ?? null });
     }
+    // Tier 3 curated facts ledger (docs/memory.md §6, §9). Mutations are
+    // operator-only via the session token gate above; concurrent edits are
+    // rejected with 409 through the ledger's expectedVersion check.
+    if (request.method === 'POST' && url.pathname === '/api/memory/items') {
+      const input = await readJsonBody(request);
+      let created;
+      await this.store.update((state) => {
+        created = createMemoryItem(state, input);
+        state.audit.push({
+          id: id('audit'), type: 'memory.proposed', memoryItemId: created.item.id,
+          decidedBy: 'user', createdAt: now()
+        });
+      });
+      this.broadcast({ type: 'state.changed', reason: 'memory.proposed', memoryItemId: created.item.id });
+      return json(response, 201, created);
+    }
+    const memoryPinMatch = routeMatch(url.pathname, /^\/api\/memory\/items\/([^/]+)\/pin$/);
+    const memorySourceMatch = routeMatch(url.pathname, /^\/api\/memory\/items\/([^/]+)\/sources$/);
+    const memoryItemMatch = routeMatch(url.pathname, /^\/api\/memory\/items\/([^/]+)$/);
+    if (request.method === 'POST' && (memoryPinMatch || memorySourceMatch || memoryItemMatch)) {
+      const input = await readJsonBody(request);
+      try {
+        let result;
+        let auditType;
+        await this.store.update((state) => {
+          if (memoryPinMatch) {
+            const item = setMemoryItemPinned(state, memoryPinMatch[1], input);
+            result = { item };
+            auditType = 'memory.pinned';
+            state.audit.push({
+              id: id('audit'), type: auditType, memoryItemId: item.id, pinned: item.pinned,
+              decidedBy: 'user', createdAt: now()
+            });
+          } else if (memorySourceMatch) {
+            result = addMemorySource(state, memorySourceMatch[1], input);
+            auditType = 'memory.source-added';
+            state.audit.push({
+              id: id('audit'), type: auditType, memoryItemId: result.item.id,
+              memorySourceId: result.source.id, messageId: result.source.messageId,
+              decidedBy: 'user', createdAt: now()
+            });
+          } else {
+            const item = reviseMemoryItem(state, memoryItemMatch[1], input);
+            result = { item };
+            auditType = 'memory.revised';
+            state.audit.push({
+              id: id('audit'), type: auditType, memoryItemId: item.id, version: item.version,
+              decidedBy: 'user', createdAt: now()
+            });
+          }
+        });
+        this.broadcast({ type: 'state.changed', reason: auditType, memoryItemId: result.item.id });
+        return json(response, 200, result);
+      } catch (error) {
+        if (error.code === 'memory-version-conflict') return json(response, 409, { error: publicError(error) });
+        throw error;
+      }
+    }
+    if (request.method === 'DELETE' && memoryItemMatch) {
+      let deleted = false;
+      await this.store.update((state) => {
+        const memory = ensureMemoryState(state);
+        const index = memory.items.findIndex((item) => item.id === memoryItemMatch[1]);
+        if (index !== -1) {
+          memory.items.splice(index, 1);
+          memory.sources = memory.sources.filter((edge) => edge.itemId !== memoryItemMatch[1]);
+          memory.itemRevisions = memory.itemRevisions.filter((rev) => rev.itemId !== memoryItemMatch[1]);
+          deleted = true;
+          state.audit.push({
+            id: id('audit'), type: 'memory.deleted', memoryItemId: memoryItemMatch[1],
+            decidedBy: 'user', createdAt: now()
+          });
+        }
+      });
+      if (deleted) {
+        this.broadcast({ type: 'state.changed', reason: 'memory.deleted', memoryItemId: memoryItemMatch[1] });
+        return json(response, 200, { success: true });
+      } else {
+        return json(response, 404, { error: 'Memory item not found' });
+      }
+    }
     if (request.method === 'POST' && url.pathname === '/api/roles') {
       const input = await readJsonBody(request);
       const agentsById = new Map(this.store.state.agents.map((entry) => [entry.id, entry]));
@@ -1112,7 +1787,7 @@ export class ConclaveApp {
         state.room.coordinatorId = coordinatorId;
         state.room.roles = roles;
         const summary = [
-          coordinatorId ? `${agentsById.get(coordinatorId).name} is now Coordinator (advisory)` : 'The room is human-coordinated',
+          coordinatorId ? `${agentsById.get(coordinatorId).name} is now Coordinator` : 'The room is human-coordinated',
           ...Object.entries(roles).map(([agentId, list]) => `${agentsById.get(agentId).name}: ${list.join(', ')}`)
         ].join(' · ');
         state.audit.push({ id: id('audit'), type: 'roles.updated', detail: summary, createdAt: now() });
@@ -1184,6 +1859,23 @@ export class ConclaveApp {
       this.broadcast({ type: 'state.changed', reason: 'task.transitioned', taskId: task.id });
       await this.startQueuedTasks();
       return json(response, 200, { ok: true });
+    }
+    const deleteTaskMatch = routeMatch(url.pathname, /^\/api\/tasks\/([^/]+)$/);
+    if (request.method === 'DELETE' && deleteTaskMatch) {
+      const input = await readJsonBody(request);
+      let deletion;
+      try {
+        deletion = await this.store.update((state) => deleteBoardTask(state, deleteTaskMatch[1], {
+          confirmTaskId: input.confirmTaskId,
+          deletionId: id('task-delete'),
+          deletedAt: now()
+        }));
+      } catch (error) {
+        if (error.code === 'task-active') return json(response, 409, { error: publicError(error) });
+        throw error;
+      }
+      this.broadcast({ type: 'state.changed', reason: 'task.deleted', taskId: deletion.taskId });
+      return json(response, 200, { deleted: true, deletion });
     }
     const archiveMatch = routeMatch(url.pathname, /^\/api\/tasks\/([^/]+)\/(archive|unarchive)$/);
     if (request.method === 'POST' && archiveMatch) {
@@ -1272,7 +1964,7 @@ export class ConclaveApp {
           id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'system',
           content: input.trust === 'unleashed'
             ? 'Room set to UNLEASHED — agent plans dispatch and run automatically with full workspace and command access. Approvals are bypassed; the audit log still records everything.'
-            : 'Room set to GATED — plans wait in the Board Inbox and writes/commands need approval.',
+            : 'Room set to GATED — the Coordinator can assign read-only work; writes and commands follow room approval policy.',
           createdAt: now()
         });
       });
@@ -1394,6 +2086,10 @@ export class ConclaveApp {
 
   hasSessionAuthority(request) {
     if (this.openAccess) return true;
+    return this.hasExplicitSessionAuthority(request);
+  }
+
+  hasExplicitSessionAuthority(request) {
     const presented = request.headers['x-conclave-token'] ?? readCookie(request, 'conclave_token');
     return presented !== null && timingSafeStringEqual(presented, this.sessionToken);
   }
@@ -1403,6 +2099,13 @@ export class ConclaveApp {
     try {
       if (url.pathname.startsWith('/api/')) {
         if (!isTrustedHost(request.headers.host)) return json(response, 403, { error: 'Untrusted Host header' });
+        const memoryControlPath = url.pathname === '/api/memory'
+          || url.pathname.startsWith('/api/memory/')
+          || url.pathname === '/api/backup'
+          || url.pathname.startsWith('/api/backup/');
+        if (memoryControlPath && !this.hasExplicitSessionAuthority(request)) {
+          return json(response, 403, { error: 'Memory governance requires the explicit operator session token' });
+        }
         if (request.method !== 'GET') {
           if (!isTrustedOrigin(request.headers.origin, request.headers.host)) {
             return json(response, 403, { error: 'Cross-origin request blocked' });
@@ -1432,8 +2135,17 @@ export class ConclaveApp {
   }
 
   close() {
+    this._closed = true;
+    this.stopIdleWatchdog();
+    if (this._summaryTimer) {
+      clearTimeout(this._summaryTimer);
+      this._summaryTimer = null;
+    }
     this.processes.cancelAll('server-shutdown');
     for (const client of this.clients) client.end();
+    if (this.memoryDb) {
+      this.memoryDb.close();
+    }
     return new Promise((resolve, reject) => this.server.close((error) => error ? reject(error) : resolve()));
   }
 }
@@ -1454,10 +2166,12 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     console.log('(CONCLAVE_OPEN_ACCESS is set: any loopback request may send, approve, and change');
     console.log(' settings. Host/Origin CSRF guards still apply. Intended for a single trusted');
     console.log(' operator on a private machine — unset CONCLAVE_OPEN_ACCESS to require the token.)');
+    console.log('Memory governance remains explicitly token-gated; use this URL to unlock it:');
+    console.log(`  http://${address.address}:${address.port}/?token=${app.sessionToken}`);
   } else {
     console.log('Conclave is running — open this exact URL to unlock actions in your browser:');
     console.log(`  http://${address.address}:${address.port}/?token=${app.sessionToken}`);
-    console.log('(Reading is open on loopback; sending, approving, and settings need this session token.');
+    console.log('(General reading is open on loopback; memory content, sending, approving, and settings need this session token.');
     console.log(' Set CONCLAVE_TOKEN to pin the token across restarts, or CONCLAVE_OPEN_ACCESS=1 to drop it.)');
   }
   console.log(`Workspace: ${app.store.state.room.workspace}`);

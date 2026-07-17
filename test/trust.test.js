@@ -54,6 +54,8 @@ test('unleashed chat prompts invite every agent to dispatch plans', () => {
   const prompt = promptForChat({ id: 'm1', content: 'build the thing' }, state.agents[0], state);
   assert.match(prompt, /UNLEASHED room/);
   assert.match(prompt, /conclave-plan/);
+  assert.match(prompt, /dispatches assigned Board tasks immediately/);
+  assert.doesNotMatch(prompt, /nothing runs until the operator approves/);
 });
 
 test('a non-coordinator plan dispatches and auto-approves writes in an unleashed room', async () => {

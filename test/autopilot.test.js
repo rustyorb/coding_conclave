@@ -5,6 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { ConclaveApp } from '../src/server.js';
 
+async function waitFor(check, message) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail(message);
+}
+
 async function makeApp(context, prefix, seed) {
   const directory = await mkdtemp(path.join(os.tmpdir(), prefix));
   const app = new ConclaveApp({ sessionToken: 'test-token', workspace: directory, storeFile: path.join(directory, '.state', 'state.json') });
@@ -237,6 +245,7 @@ test('invariant: with autopilot fully enabled, a chat message still creates zero
   assert.equal(message.body.chatTurnsCreated, 1);
   assert.equal(app.store.state.tasks.length, 0);
   assert.equal(app.store.state.approvals.length, 0);
+  await waitFor(() => started.length === 1, 'the asynchronous queue drainer should launch the chat turn');
   assert.equal(started.length, 1);
   assert.equal(started[0].kind, 'chat', 'chat turns run read-only and never gain write authority');
 });

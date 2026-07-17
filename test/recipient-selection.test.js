@@ -8,6 +8,14 @@ import { ConclaveApp } from '../src/server.js';
 
 const agent = (id, status = 'installed') => ({ id, status });
 
+async function waitFor(check, message) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail(message);
+}
+
 test('General Chat defaults to every installed agent and follows newly activated agents', () => {
   const selection = createRecipientSelection();
 
@@ -115,6 +123,7 @@ test('the default audience fans one message out as read-only chat and never crea
   assert.equal(app.store.state.tasks.length, 0);
   assert.equal(app.store.state.approvals.length, 0);
   assert.equal(app.store.state.chatTurns.length, 2);
+  await waitFor(() => started.length === 2, 'the asynchronous queue drainer should launch both chat turns');
   const codex = started.find((entry) => entry.execution.agentId === 'codex').invocation;
   const claude = started.find((entry) => entry.execution.agentId === 'claude').invocation;
   assert.equal(codex.args[codex.args.indexOf('--sandbox') + 1], 'read-only');

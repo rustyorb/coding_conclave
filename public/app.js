@@ -2,6 +2,7 @@ import { createRefreshScheduler } from './refresh-scheduler.js';
 import { esc, renderMarkdown } from './markdown.js';
 import { chatFeedMessages } from './chat-feed.js';
 import { agentIdentity, avatarMarkup, taglineMarkup } from './avatar-cards.js';
+import { capabilityBadges } from './capability-badges.js';
 import { createRecipientSelection } from './recipient-selection.js';
 
 const $ = (selector) => document.querySelector(selector);
@@ -14,7 +15,7 @@ let promoteMessageId = null;
 // fresh room or a restart comes up ready to talk to the whole fleet.
 const recipients = createRecipientSelection();
 const boardFilters = { text: '', agentId: '', closed: false, archived: false };
-const ROUTES = ['chat', 'board', 'runs', 'workspace'];
+const ROUTES = ['chat', 'board', 'runs', 'workspace', 'memory'];
 
 const relativeTime = (iso) => {
   const seconds = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
@@ -22,6 +23,33 @@ const relativeTime = (iso) => {
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
   return `${Math.floor(seconds / 3600)}h`;
+};
+
+const formatLocalTime = (iso) => {
+  if (!iso) return '';
+  const date = new Date(iso);
+  if (isNaN(date.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  const tzo = -date.getTimezoneOffset();
+  const dif = tzo >= 0 ? '+' : '-';
+  const localISO = date.getFullYear() +
+    '-' + pad(date.getMonth() + 1) +
+    '-' + pad(date.getDate()) +
+    'T' + pad(date.getHours()) +
+    ':' + pad(date.getMinutes()) +
+    ':' + pad(date.getSeconds()) +
+    dif + pad(Math.floor(Math.abs(tzo) / 60)) +
+    ':' + pad(Math.abs(tzo) % 60);
+  return `${localISO} (${date.toLocaleString()})`;
+};
+
+// Full identity detail for durable events: local ISO time, the server's UTC
+// timestamp at millisecond precision, and the room's monotonic event sequence.
+const timestampDetail = (record) => {
+  const parts = [formatLocalTime(record.createdAt)];
+  if (record.createdAt) parts.push(`UTC ${record.createdAt}`);
+  if (Number.isInteger(record.seq)) parts.push(`event #${record.seq}`);
+  return parts.filter(Boolean).join(' · ');
 };
 
 async function api(url, options = {}) {
@@ -101,6 +129,7 @@ function renderTopbar() {
   badge('#navBoard', openTasks);
   badge('#navRuns', runningExecutions);
   badge('#navWorkspace', state.workspace.status.length);
+  badge('#navMemory', state.memory?.itemsTotal ?? 0);
   badge('#approvalBadge', pendingApprovals, true);
 }
 
@@ -125,6 +154,7 @@ function renderAgents() {
       </div>
       ${taglineMarkup(identity)}
       ${agentRoleBadges(agent)}
+      ${capabilityBadges(agent)}
       <div class="agent-action-row">
         <div class="agent-action">${esc(agent.lastAction)}</div>
         <button class="agent-assign" data-assign-agent="${esc(agent.id)}" ${agent.status !== 'installed' ? 'disabled' : ''}>Assign task</button>
@@ -174,13 +204,14 @@ function renderFeed() {
       && !state.chatTurns.some((candidate) => candidate.retryOf === turn.id);
     const actions = [
       promotable ? `<button class="message-action" data-promote="${esc(message.id)}" title="Promote to task">→ Task</button>` : '',
+      promotable && !state.memory?.locked ? `<button class="message-action" data-promote-memory="${esc(message.id)}" title="Promote to memory">+ Memory</button>` : '',
       retryable ? `<button class="message-action retry" data-retry-turn="${esc(turn.id)}">Retry reply</button>` : '',
       message.source !== 'system' ? `<button class="message-action" data-copy-message="${esc(message.id)}" title="Copy message text">Copy</button>` : ''
     ].filter(Boolean).join('');
     return `<article class="message ${message.source === 'system' ? 'system-message' : ''}">
       <div class="message-avatar ${esc(sourceClass)}">${message.source === 'user' ? 'YOU' : esc(initials(message.sourceName))}</div>
       <div class="message-main">
-        <div class="message-head"><strong>${esc(message.sourceName)}</strong>${chip}<span class="message-time">${relativeTime(message.createdAt)}</span>${actions ? `<span class="message-actions">${actions}</span>` : ''}</div>
+        <div class="message-head"><strong>${esc(message.sourceName)}</strong>${chip}<span class="message-time" title="${esc(timestampDetail(message))}">${relativeTime(message.createdAt)}</span>${actions ? `<span class="message-actions">${actions}</span>` : ''}</div>
         <div class="message-body">${message.source === 'system' ? esc(message.content) : renderMarkdown(message.content)}</div>
       </div>
     </article>`;
@@ -253,6 +284,9 @@ function taskMenuItems(task) {
     items.push(`<button role="menuitem" data-unarchive="${esc(task.id)}">Unarchive</button>`);
   }
   items.push(`<button role="menuitem" data-copy-title="${esc(task.id)}">Copy title</button>`);
+  if (task.status !== 'active') {
+    items.push(`<button role="menuitem" data-delete-task="${esc(task.id)}">Delete permanently…</button>`);
+  }
   return items.join('');
 }
 
@@ -382,7 +416,7 @@ function renderRuns() {
     <button class="run-item ${execution.id === active?.id ? 'active' : ''} status-${esc(execution.status)}" data-execution="${esc(execution.id)}">
       <strong>${esc(execution.agentId || 'command')}</strong>
       <span>${esc(execution.kind || 'agent')} · ${esc(execution.status)}</span>
-      <span class="run-time">${relativeTime(execution.startedAt)}</span>
+      <span class="run-time" title="${esc(formatLocalTime(execution.startedAt))}">${relativeTime(execution.startedAt)}</span>
     </button>`).join('') + truncationNote : '<div class="blank-state">Real executions appear here after chat replies, tasks, or approved commands.</div>';
   if (active) {
     activeExecutionId = active.id;
@@ -497,6 +531,7 @@ function render() {
   renderTopbar();
   renderAgents(); renderRecipients(); renderFeed(); renderTurnStrip();
   renderBoard(); renderRuns(); renderWorkspace(); renderApprovals();
+  renderMemory();
 }
 
 // ---------- composer ----------
@@ -735,6 +770,25 @@ document.addEventListener('click', async (event) => {
       const task = state.tasks.find((entry) => entry.id === button.dataset.copyTitle);
       if (task) { await navigator.clipboard.writeText(task.title); toast('Task title copied'); }
     }
+    if (button.dataset.deleteTask) {
+      const task = state.tasks.find((entry) => entry.id === button.dataset.deleteTask);
+      if (!task) return;
+      const dependents = state.tasks.filter((entry) => (entry.dependencies ?? []).includes(task.id)).length;
+      const dependencyWarning = dependents
+        ? ` ${dependents} dependent task${dependents === 1 ? '' : 's'} will remain blocked.`
+        : '';
+      const confirmed = window.confirm(
+        `Permanently delete “${task.title}” from the Board?${dependencyWarning}\n\n`
+        + 'The task cannot be assigned again. This cannot be undone; a durable audit record will be retained.'
+      );
+      if (!confirmed) return;
+      await api(`/api/tasks/${task.id}`, {
+        method: 'DELETE',
+        body: JSON.stringify({ confirmTaskId: task.id })
+      });
+      toast('Task deleted; audit record retained');
+      await refresh();
+    }
     if (button.dataset.copyMessage) {
       const message = state.messages.find((entry) => entry.id === button.dataset.copyMessage);
       if (message) { await navigator.clipboard.writeText(message.content); toast('Message copied'); }
@@ -790,6 +844,31 @@ document.addEventListener('click', async (event) => {
       toast(button.dataset.accepted === 'true' ? 'Task accepted' : 'Task rejected'); await refresh();
     }
     if (button.dataset.execution) { activeExecutionId = button.dataset.execution; renderRuns(); }
+    if (button.dataset.togglePin) {
+      const itemId = button.dataset.togglePin;
+      const currentlyPinned = button.dataset.pinned === 'true';
+      const version = Number(button.dataset.version);
+      await api(`/api/memory/items/${itemId}/pin`, {
+        method: 'POST',
+        body: JSON.stringify({ pinned: !currentlyPinned, expectedVersion: version })
+      });
+      toast(currentlyPinned ? 'Memory item unpinned' : 'Memory item pinned');
+      await refresh();
+    }
+    if (button.dataset.editMemory) {
+      openMemoryDialog({ itemId: button.dataset.editMemory });
+    }
+    if (button.dataset.deleteMemory) {
+      const item = state.memory.items.find((entry) => entry.id === button.dataset.deleteMemory);
+      if (!item) return;
+      if (!window.confirm(`Permanently forget “${item.title}” and its stored revisions and source excerpts?`)) return;
+      await api(`/api/memory/items/${item.id}`, { method: 'DELETE' });
+      toast('Memory item forgotten');
+      await refresh();
+    }
+    if (button.dataset.promoteMemory) {
+      openMemoryDialog({ messageId: button.dataset.promoteMemory });
+    }
   } catch (error) { toast(error.message, true); }
 });
 
@@ -806,6 +885,309 @@ $('#scanButton').addEventListener('click', async () => {
 $('#pauseButton').addEventListener('click', async () => {
   try { await api(`/api/room/${state.room.paused ? 'resume' : 'pause'}`, { method: 'POST', body: '{}' }); await refresh(); toast(state.room.paused ? 'Room paused' : 'Room resumed'); } catch (error) { toast(error.message, true); }
 });
+
+// ---------- memory ledger ----------
+
+const memoryFilters = { text: '', kind: '', status: '', pinnedOnly: false };
+
+function renderMemory() {
+  if (!state || !state.memory) return;
+
+  const engine = state.memoryEngine || {};
+  const engineStatus = $('#memoryEngineStatus');
+  if (engineStatus) {
+    engineStatus.textContent = !engine.sqliteEnabled
+      ? 'SQLite prompt recall is off; agents use the bounded JSON transcript.'
+      : engine.recallHealthy
+        ? 'SQLite prompt recall is on in lexical-only mode; semantic retrieval and backup/restore remain off.'
+        : 'SQLite prompt recall is unavailable; agents are using the bounded JSON transcript fallback.';
+  }
+  $('#newMemoryButton').disabled = state.memory.locked === true;
+
+  // Render Rolling Summary (Tier 2) in left rail
+  const rollup = state.summary?.rollup;
+  const rollupContent = $('#rollupContent');
+  if (rollupContent) {
+    if (state.memory.locked) {
+      rollupContent.innerHTML = '<div class="blank-state">Memory content is locked. Open the token-bearing operator URL to inspect summaries and curated memory.</div>';
+      $('#summaryUpdated').textContent = 'locked';
+    } else if (rollup && rollup.content) {
+      rollupContent.innerHTML = renderMarkdown(rollup.content);
+      const updated = state.summary.updatedAt ? new Date(state.summary.updatedAt).toLocaleTimeString() : 'unknown';
+      $('#summaryUpdated').textContent = `updated ${updated}`;
+    } else {
+      rollupContent.innerHTML = '<div class="blank-state">No rolling working summary generated yet.</div>';
+      $('#summaryUpdated').textContent = 'none';
+    }
+  }
+
+  // Filter memories
+  const items = state.memory.items || [];
+  const sources = state.memory.sources || [];
+
+  const filtered = items.filter((item) => {
+    if (memoryFilters.pinnedOnly && !item.pinned) return false;
+    if (memoryFilters.kind && item.kind !== memoryFilters.kind) return false;
+    if (memoryFilters.status && item.status !== memoryFilters.status) return false;
+    if (memoryFilters.text) {
+      const query = memoryFilters.text.toLowerCase();
+      const matchText = `${item.title} ${item.statement}`.toLowerCase();
+      if (!matchText.includes(query)) return false;
+    }
+    return true;
+  });
+
+  const memoryCount = $('#memoryCount');
+  if (memoryCount) {
+    memoryCount.textContent = state.memory.locked
+      ? `${state.memory.itemsTotal || 0} items · locked`
+      : `${filtered.length} of ${items.length} items`;
+  }
+
+  const kindLabel = (kind) => {
+    return kind.replace('-', ' ').replace(/\b\w/g, c => c.toUpperCase());
+  };
+
+  const memoryLedger = $('#memoryLedger');
+  if (memoryLedger) {
+    if (state.memory.locked) {
+      memoryLedger.innerHTML = '<div class="blank-state" style="grid-column: 1/-1;">Curated memory bodies and provenance are not exposed without the explicit operator session token.</div>';
+      return;
+    }
+    memoryLedger.innerHTML = filtered.length ? filtered.map((item) => {
+      const pinnedChip = item.pinned ? '<span class="chip status-running">pinned</span>' : '';
+      const statusChip = `<span class="chip status-${esc(item.status)}">${esc(item.status)}</span>`;
+      const supportClass = item.supportState === 'available' ? 'status-completed'
+        : item.supportState === 'partial' ? 'status-interrupted'
+        : 'status-failed';
+      const supportChip = `<span class="chip ${supportClass}">support: ${esc(item.supportState)}</span>`;
+
+      // Get sources for this item
+      const itemSources = sources.filter(src => src.itemId === item.id);
+      const sourcesHtml = itemSources.length ? `
+        <div class="memory-sources-list">
+          <div style="font-size: 9px; font-weight: bold; color: var(--muted); margin-bottom: 4px; text-transform: uppercase;">Sources (${itemSources.length})</div>
+          ${itemSources.map(src => {
+            const msg = state.messages.find(m => m.id === src.messageId);
+            const author = msg ? msg.sourceName : src.type;
+            return `
+              <div class="memory-source-item">
+                <div class="memory-source-header">
+                  <span>${esc(author)} (rev ${src.messageRevision})</span>
+                  <span class="message-time" title="Message ID: ${esc(src.messageId)}">${relativeTime(src.createdAt)}</span>
+                </div>
+                <div class="memory-source-excerpt">${esc(src.excerpt)}</div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      ` : '';
+
+      return `
+        <article class="memory-card ${item.pinned ? 'pinned' : ''}" data-id="${esc(item.id)}">
+          <button class="memory-card-pin-btn" data-toggle-pin="${esc(item.id)}" data-pinned="${item.pinned}" data-version="${item.version}" title="${item.pinned ? 'Remove' : 'Add'} recall priority${engine.sqliteEnabled ? '' : ' (applies when SQLite recall is enabled)'}">
+            ${item.pinned ? '★' : '☆'}
+          </button>
+          <div class="memory-card-chips">
+            <span class="chip select-kind" style="border-color: rgba(156,124,255,0.4); color: #cabbff;">${esc(kindLabel(item.kind))}</span>
+            ${statusChip}
+            ${supportChip}
+            ${pinnedChip}
+          </div>
+          <h3>${esc(item.title)}</h3>
+          <p>${esc(item.statement)}</p>
+          ${sourcesHtml}
+          <div class="memory-card-meta">
+            <span>By ${esc(item.authorId)} (${esc(item.authorType)}) · v${item.version}</span>
+            <div class="memory-card-actions">
+              <button class="tiny-button" data-edit-memory="${esc(item.id)}">Edit</button>
+              <button class="tiny-button" data-delete-memory="${esc(item.id)}">Forget</button>
+            </div>
+          </div>
+        </article>
+      `;
+    }).join('') : '<div class="blank-state" style="grid-column: 1/-1;">No memory items match filters.</div>';
+  }
+}
+
+function populateMessageSelect(selectElement) {
+  if (!selectElement) return;
+  const recentMessages = (state?.messages || [])
+    .filter(m => m.type === 'message' || m.type === 'handoff' || m.type === 'blocker')
+    .slice(-50)
+    .reverse();
+  selectElement.innerHTML = recentMessages.map(m => {
+    const excerpt = m.content.length > 60 ? m.content.slice(0, 57) + '...' : m.content;
+    return `<option value="${esc(m.id)}">${esc(m.sourceName)}: ${esc(excerpt)}</option>`;
+  }).join('');
+}
+
+function openMemoryDialog({ messageId = null, itemId = null } = {}) {
+  const form = $('#memoryForm');
+  if (!form) return;
+  form.reset();
+
+  const kindSelect = $('#memoryFormKind');
+  const addSourceSelect = $('#memoryFormAddSourceSelect');
+  const sourceSelect = $('#memoryFormSources');
+
+  populateMessageSelect(sourceSelect);
+  populateMessageSelect(addSourceSelect);
+
+  if (itemId) {
+    // Edit Mode
+    const item = state.memory.items.find(i => i.id === itemId);
+    if (!item) return;
+
+    $('#memoryDialogEyebrow').textContent = 'EDIT MEMORY';
+    $('#memoryDialogTitle').textContent = 'Edit memory item';
+    $('#memorySubmit').textContent = 'Save changes';
+
+    $('#memoryFormId').value = item.id;
+    $('#memoryFormVersion').value = item.version;
+    kindSelect.value = item.kind;
+    kindSelect.disabled = true;
+
+    $('#memoryFormPinned').checked = item.pinned;
+    $('#memoryFormTitle').value = item.title;
+    $('#memoryFormStatement').value = item.statement;
+
+    $('#memorySourcesSection').hidden = true;
+    $('#memoryEditSourcesSection').hidden = false;
+
+    // Render existing sources list
+    const itemSources = (state.memory.sources || []).filter(src => src.itemId === itemId);
+    $('#memoryFormExistingSources').innerHTML = itemSources.map(src => {
+      const msg = state.messages.find(m => m.id === src.messageId);
+      const author = msg ? msg.sourceName : src.type;
+      const excerpt = src.excerpt.length > 50 ? src.excerpt.slice(0, 47) + '...' : src.excerpt;
+      return `
+        <div class="memory-form-source-item">
+          <span class="memory-form-source-text" title="${esc(src.excerpt)}"><strong>${esc(author)}</strong>: ${esc(excerpt)}</span>
+          <span class="chip" style="font-size: 8px; padding: 1px 4px;">${esc(src.supportRole)}</span>
+        </div>
+      `;
+    }).join('') || '<div class="blank-state">No sources associated.</div>';
+
+    $('#memorySourcePreview').hidden = true;
+  } else {
+    // Propose (Create) Mode
+    $('#memoryDialogEyebrow').textContent = 'CURATE MEMORY';
+    $('#memoryDialogTitle').textContent = 'Propose a memory';
+    $('#memorySubmit').textContent = 'Propose memory';
+
+    $('#memoryFormId').value = '';
+    $('#memoryFormVersion').value = '';
+    kindSelect.disabled = false;
+    kindSelect.value = 'decision';
+
+    $('#memoryFormPinned').checked = false;
+    $('#memoryFormTitle').value = '';
+    $('#memoryFormStatement').value = '';
+
+    $('#memorySourcesSection').hidden = false;
+    $('#memoryEditSourcesSection').hidden = true;
+
+    if (messageId) {
+      const msg = state.messages.find(m => m.id === messageId);
+      if (msg) {
+        $('#memorySourcePreview').hidden = false;
+        $('#memorySourcePreviewText').textContent = `${msg.sourceName}: ${msg.content.slice(0, 280)}${msg.content.length > 280 ? '…' : ''}`;
+
+        sourceSelect.value = messageId;
+
+        $('#memoryFormTitle').value = msg.content.split(/[.!?\n]/)[0].slice(0, 100).trim();
+        $('#memoryFormStatement').value = msg.content;
+      } else {
+        $('#memorySourcePreview').hidden = true;
+      }
+    } else {
+      $('#memorySourcePreview').hidden = true;
+    }
+  }
+
+  $('#memoryDialog').showModal();
+}
+
+$('#memoryForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const id = $('#memoryFormId').value;
+  const version = Number($('#memoryFormVersion').value);
+
+  const payload = {
+    title: $('#memoryFormTitle').value.trim(),
+    statement: $('#memoryFormStatement').value.trim()
+  };
+
+  try {
+    if (id) {
+      payload.expectedVersion = version;
+      await api(`/api/memory/items/${id}`, { method: 'POST', body: JSON.stringify(payload) });
+
+      const wasPinned = state.memory.items.find(i => i.id === id)?.pinned;
+      const wantsPinned = $('#memoryFormPinned').checked;
+      if (wasPinned !== wantsPinned) {
+        await api(`/api/memory/items/${id}/pin`, {
+          method: 'POST',
+          body: JSON.stringify({ pinned: wantsPinned, expectedVersion: version + 1 })
+        });
+      }
+
+      $('#memoryDialog').close();
+      toast('Memory item updated');
+    } else {
+      payload.kind = $('#memoryFormKind').value;
+      payload.pinned = $('#memoryFormPinned').checked;
+      payload.sources = [{ messageId: $('#memoryFormSources').value }];
+
+      await api('/api/memory/items', { method: 'POST', body: JSON.stringify(payload) });
+      $('#memoryDialog').close();
+      toast('Memory item proposed');
+    }
+    await refresh();
+  } catch (error) {
+    toast(error.message, true);
+  }
+});
+
+$('#memoryFormAddSourceButton').addEventListener('click', async () => {
+  const itemId = $('#memoryFormId').value;
+  const version = Number($('#memoryFormVersion').value);
+  const messageId = $('#memoryFormAddSourceSelect').value;
+  if (!itemId || !messageId) return;
+
+  try {
+    const result = await api(`/api/memory/items/${itemId}/sources`, {
+      method: 'POST',
+      body: JSON.stringify({ messageId, expectedVersion: version })
+    });
+
+    $('#memoryFormVersion').value = result.item.version;
+    toast('Source message associated');
+    await refresh();
+
+    const itemSources = (state.memory.sources || []).filter(src => src.itemId === itemId);
+    $('#memoryFormExistingSources').innerHTML = itemSources.map(src => {
+      const msg = state.messages.find(m => m.id === src.messageId);
+      const author = msg ? msg.sourceName : src.type;
+      const excerpt = src.excerpt.length > 50 ? src.excerpt.slice(0, 47) + '...' : src.excerpt;
+      return `
+        <div class="memory-form-source-item">
+          <span class="memory-form-source-text" title="${esc(src.excerpt)}"><strong>${esc(author)}</strong>: ${esc(excerpt)}</span>
+          <span class="chip" style="font-size: 8px; padding: 1px 4px;">${esc(src.supportRole)}</span>
+        </div>
+      `;
+    }).join('');
+  } catch (error) {
+    toast(error.message, true);
+  }
+});
+
+$('#memorySearch').addEventListener('input', (event) => { memoryFilters.text = event.target.value; renderMemory(); });
+$('#memoryKind').addEventListener('change', (event) => { memoryFilters.kind = event.target.value; renderMemory(); });
+$('#memoryStatus').addEventListener('change', (event) => { memoryFilters.status = event.target.value; renderMemory(); });
+$('#memoryPinnedOnly').addEventListener('change', (event) => { memoryFilters.pinnedOnly = event.target.checked; renderMemory(); });
+$('#newMemoryButton').addEventListener('click', () => openMemoryDialog());
 
 // ---------- boot ----------
 

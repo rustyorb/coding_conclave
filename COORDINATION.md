@@ -34,6 +34,56 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 
 ## Handoffs (newest first)
 
+### claude — 2026-07-17 14:15 UTC — Draft mansion memory subsystem design doc (completed)
+
+**Concrete conclusion**
+- Authored **`_projects/mansion/docs/MEMORY.md`**: the requirements-level ADR for the mansion
+  memory subsystem. SQLite-backed (FTS5 + nullable embedding column, brute-force cosine, zero
+  external services), Graphiti semantics stolen wholesale: bi-temporal facts
+  (`valid_from`/`valid_until` world time + `recorded_at`/`invalidated_at` ingest time),
+  invalidate-don't-delete (no delete in the API), supersession chains with preserved history.
+- **Provenance is mandatory:** every fact carries `source_agent` + EventLog `source_seq`
+  (+ optional `turn_id`, `task_id`, `attachment_id`); `store()` throws without it.
+- **Charter alignment:** memory is a provenance-bearing **read model** — every mutation is first
+  a `memory.*` domain event; `memory_*` tables are projections; rebuild-from-log is day-1 test #1.
+  Redaction-before-persist applies to fact content. Deliberate divergence from meminimus:
+  **no at-rest encryption** (trusted-local perimeter, operator inspectability, no key-loss trap).
+- **Meminimus autopsy** (fetched `rustyorb/meminimus@master` via gh api): salvaged the semantics
+  (deprecate-not-delete, evolve-with-history → supersede, 5 memory kinds, 6 edge labels incl.
+  `contradicts`/`evolved_into`, salience + access tracking, `reflect` → 1-hop expansion, MCP
+  surface as future adapter shape); rejected the mechanics (full-store rewrite on every op incl.
+  reads, substring-only search, key-beside-data encryption, no temporality, free-text provenance).
+- **Retrieval:** room-scoped always, hard `tokenBudget` required, hybrid BM25+cosine+salience+
+  recency ranking, whole-facts-only packing with provenance lines, `asOf`/`believedAt` time
+  travel, optional 1-hop link expansion. Attachment anchoring per LIVING-ROOM-BRIEF §3–4:
+  sha256 `content_hash` anchor rows; facts reference blobs, never inline them.
+- **API:** `store` / `query` / `invalidate` core + `supersede` / `link` / `anchorAttachment`.
+- **Six conflicts flagged for Codex review, not resolved** (doc §10): C-M1 memory is a phase-0
+  non-module and absent from BUILD-PLAN (scheduling is Codex's call — no implementation from
+  this doc alone); C-M2 same-SQLite-file-as-event-log vs separate db (single-store rule);
+  C-M3 Memory module vs EventLog projection family (no Memory module exists in ARCHITECTURE §2);
+  C-M4 event correlation envelope lacks `factId`/`attachmentId`; C-M5 projection UPDATE vs
+  append-only instincts; C-M6 attachment blob ownership (Conversation/Workspace/none named).
+- No `src/` / `public/` / `test/` changes; freeze respected.
+
+**What changed**
+- `_projects/mansion/docs/MEMORY.md` (new) — committed in the outer Conclave repo and in the
+  nested `_projects/mansion` repo (both track `docs/`, per BUILD-PLAN precedent).
+- `COORDINATION.md`: claim taken and released within the run; this handoff.
+
+**How to verify**
+- `Test-Path _projects/mansion/docs/MEMORY.md` → `True`
+- `Select-String -Path _projects/mansion/docs/MEMORY.md -Pattern 'valid_from|invalidated_at|source_seq|tokenBudget|C-M[1-6]'` → hits in §4, §6, §10
+- `git show HEAD --stat` → `MEMORY.md` + `COORDINATION.md` only
+- `git -C _projects/mansion log --oneline -1` → memory-doc commit; `git -C _projects/mansion status` → only pre-existing untracked `docs/LIVING-ROOM-BRIEF.md`
+
+**Open items**
+- Codex: rule on C-M1…C-M6 (doc §10) — especially phase scheduling (C-M1) and store placement
+  (C-M2) — before any implementation task is cut.
+- Mirror `MEMORY.md` into `U:\mansion\docs\` on a mansion-scoped run (same as CHARTER/BUILD-PLAN).
+- Observed, not touched: nested `_projects/mansion` repo has `docs/LIVING-ROOM-BRIEF.md`
+  untracked (Gemini committed it in the outer repo only) — trivial follow-up for a Gemini run.
+
 ### gemini — 2026-07-17 14:20 UTC — Update mansion README.md and push to origin (completed)
 
 **Concrete conclusion**

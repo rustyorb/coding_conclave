@@ -36,6 +36,49 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 
 ## Handoffs (newest first)
 
+### claude — 2026-07-17 15:20 UTC — Bootstrap SSH key auth to Cyberclaw (completed)
+
+**State:** `completed` (claim taken and released within the run; no workspace files touched except this board)
+
+**Concrete conclusion**
+- **Done-criterion verified:** `ssh -o BatchMode=yes mars@192.168.0.69 true` → exit **0**.
+- No key generation and **no password use was needed**: the workspace keypair
+  `C:\Users\Robotics\.ssh\id_ed25519` (ED25519 `SHA256:3pbn+jJlAKAUHaz+QRkH9Ooew4Ax77qrr6NJcAZU0T0`)
+  already existed, and Gemini's prior run had installed the pubkey into
+  `/home/mars/.ssh/authorized_keys` via the SMB share. The operator password was never seen,
+  echoed, or persisted by this run.
+- **Host survey (over key auth, all commands exit 0):**
+  - `uname -a`: Linux cyberclaw 7.0.0-28-generic #28~**24.04.1-Ubuntu** SMP PREEMPT_DYNAMIC x86_64
+    — note the host is **Ubuntu 24.04**, not 22.04 as the task text assumed.
+  - RAM: **62 GiB** total (52 GiB free), swap 8 GiB.
+  - Disks: `nvme0n1p3` = label **DEV, ntfs, 402G, ~110M used, already mounted at `/media/mars/DEV`**;
+    `nvme0n1p2` = AI ntfs 741G (mounted); `nvme0n1p4` = ext4 root 479G (70% used);
+    `nvme0n1p6` = ext4 "Ouroboros" (unmounted); second NVMe holds a Windows install.
+    SMB mounts: `/mnt/obsidian` (192.168.0.177), `/mnt/awm-models` (192.168.0.250).
+  - Docker: **present**, version 29.6.1 (build 8900f1d).
+- **sshd posture (read-only check, not modified):** `sudo -n sshd -T` reports
+  `passwordauthentication yes`, `pubkeyauthentication yes`, `kbdinteractiveauthentication no`,
+  `permitrootlogin without-password`. `sudo -n` works → mars has passwordless sudo.
+
+**Recommendations (operator decisions, nothing changed)**
+1. Rotate the mars password (it was hinted in room chat), then set
+   `PasswordAuthentication no` in `/etc/ssh/sshd_config` on Cyberclaw and reload sshd —
+   key auth is now proven, so password auth is pure attack surface.
+2. **Disk-task gate applies:** the DEV partition is NOT an empty unformatted disk — it is
+   NTFS and mounted at `/media/mars/DEV`. Grok's plan said "format ext4"; that now needs an
+   explicit operator call: keep NTFS (mount at `/mnt/mansion` with `uid=1000,gid=1000`) or
+   confirm reformat of `nvme0n1p3` (UUID `A0B8277DB82750D8`, currently ~110M used) to ext4.
+
+**How to verify**
+```powershell
+ssh -o BatchMode=yes mars@192.168.0.69 true; $LASTEXITCODE   # → 0
+ssh -o BatchMode=yes mars@192.168.0.69 "hostname; whoami"     # → cyberclaw / mars
+```
+
+**Open items**
+- Operator: rule on NTFS-vs-ext4 for `nvme0n1p3` before the Grok mount/format task runs.
+- Operator: password rotation + `PasswordAuthentication no` (recommendation only).
+
 ### gemini — 2026-07-17 15:00 UTC — Verify SSH connectivity and keys (completed)
 
 **State:** `completed`

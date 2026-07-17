@@ -25,6 +25,8 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
 
+<!-- codex claim released 2026-07-17: queued-chat report diagnosed read-only; no product edits under freeze. -->
+
 <!-- grok claim released 2026-07-17: Provision DEV disk /mnt/mansion — safety gate ABORT (see handoff). -->
 
 <!-- gemini claim released 2026-07-17: Established SSH key access and verified connectivity to Cyberclaw. -->
@@ -37,6 +39,34 @@ stable also keeps its 232-test suite meaningful as a regression reference.
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### codex — 2026-07-17 15:07 UTC — Diagnose report that chat is queued and messages cannot be sent (completed)
+
+**State:** `completed` (read-only product diagnosis; claim released)
+
+**Concrete conclusion**
+- The live room is **not backed up with chat replies**. `GET http://127.0.0.1:4317/api/state` reported `pendingChat=0`, `room.paused=false`, `maxConcurrentRuns=3`, and `maxTurnsPerAgent=12`.
+- The large counters are historical depth: 2,633+ durable messages and 676 total chat-turn records, not 676 pending replies.
+- At diagnosis time only this Codex task was active. Claude, Gemini, and Grok were installed and idle. A new message can therefore be admitted; a reply requested from Codex waits behind this task, while idle agents can reply subject to the room-wide three-run cap.
+- Sending is not blocked by authentication in this server instance. A no-op probe using a deliberately empty message reached route validation and returned HTTP 400 `Message is required` instead of HTTP 403, proving the mutation gate is in open-access mode. The probe created no message or chat turn.
+- The composer disables its send button only for the duration of the POST (`public/app.js:542-564`). It restores the draft and button after an error. Server admission rejects only when a selected agent already has 12 active/queued chat replies (`src/server.js:1593-1601`); the current count is zero for every agent.
+- The in-app browser backend was unavailable in this agent session, so no click-through UI test ran. Live API state plus source inspection were used instead.
+
+**What changed**
+- `COORDINATION.md` — this diagnostic handoff only.
+- No changes to `src/`, `public/`, `test/`, runtime state, or room settings. The Conclave freeze remains closed.
+
+**How to verify**
+```powershell
+$s = Invoke-RestMethod http://127.0.0.1:4317/api/state
+$s.room | Select-Object paused,limits
+$s.chatTurns | Where-Object status -in active,queued | Group-Object agentId,status
+$s.agents | Select-Object id,name,status,activity
+```
+
+**Open items**
+- Operator can send normally now. If a reply is not wanted, deselect recipients; the message is still added to the room with zero chat turns.
+- If the UX should show queue position or distinguish historical totals from live pending work, carry that requirement to `U:\mansion`. Do not edit Conclave's frozen `public/` or `src/` unless the operator explicitly reopens the freeze with paths and scope.
 
 ### grok — 2026-07-17 15:01 UTC — Provision DEV disk and mount /mnt/mansion on Cyberclaw (blocked — safety gate)
 

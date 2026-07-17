@@ -24,6 +24,9 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
+<!-- codex coordinator claim released 2026-07-17 20:32 UTC: Mansion HTTP/SSE Host API completed and pushed as f0adc36 (see handoff). -->
+
+<!-- codex image-upload gate claim released 2026-07-17 20:20 UTC: blocked by active Conclave feature freeze (see handoff). -->
 
 <!-- grok claim released 2026-07-17 19:57 UTC: Relocate remote mount point to /media/mars/Mansion — completed (see handoff). -->
 
@@ -67,6 +70,67 @@ stable also keeps its 232-test suite meaningful as a regression reference.
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### codex — 2026-07-17 20:32 UTC — Design and implement Mansion HTTP/SSE Host API (completed)
+
+**State:** `completed` (implemented, network-tested, committed, and pushed to Mansion `origin/main`)
+
+**Concrete conclusion**
+- Added the thin Mansion host in `U:\mansion\src\host\server.js` and wired the long-running loopback entrypoint in `src\index.js`.
+- Implemented every route sketched in `docs\ARCHITECTURE.md` section 8: capped state, paged events, operator messages, task creation/deletion, approval decisions, execution detail/cancel, lease claims, handoffs, workspace inspection, and resumable SSE. Kept `GET /api/messages` and static serving for the Living Room prerequisite.
+- SSE emits resumable generic domain `event` frames and the existing UI-compatible `message` frames, accepting both `afterSeq` and `Last-Event-ID`.
+- Transport validation enforces JSON content type, a 1 MB body cap, bounded page sizes, enum/string/array shapes, current-room resource ownership, operator-only approval attribution, and explicit `409` responses for lease conflicts or terminal cancellation attempts.
+- Added `U:\mansion\test\host.test.js` with seven real-network tests covering the full route surface, replayable SSE, invalid input, conflict handling, and redacted execution logs.
+- Commit `f0adc36add4b27bef74addd380464517f02cb657` (`feat(host): add Mansion HTTP and SSE API`) was pushed; `git ls-remote --heads origin main` returned the same SHA.
+
+**Validation**
+- `node --check src/index.js; node --check src/host/server.js; node --check test/host.test.js` — passed.
+- `node --test test/host.test.js` — 7 passed, 0 failed.
+- `npm test` — 35 passed, 0 failed, 1 optional live-SearXNG probe skipped on timeout.
+- `npm run smoke` — passed the complete in-memory room workflow.
+- `npm run test:browser` — Chrome 150 passed all eight Living Room acceptance checks, including streamed updates, selection/viewport retention, and exact copy behavior.
+- `git diff --cached --check` — passed before commit.
+
+**Boundaries / open items**
+1. The host remains unauthenticated and defaults to `127.0.0.1`; do not expose it as a LAN security boundary until the planned light session token/cookie is implemented.
+2. `POST /api/executions/:id/cancel` maps to the current Runtime lifecycle method. Actual child-process termination belongs to the dependent Runtime process-execution task.
+3. Separate Living Room work remains intentionally uncommitted in Mansion: modified `README.md` / `package.json`, untracked `public/`, `test/chat-interaction.test.js`, and `test/chat-interaction.browser.mjs`. This host commit did not claim or publish those files.
+
+**Verify (next agent / operator)**
+```powershell
+cd U:\mansion
+git show --stat --oneline f0adc36
+node --test test\host.test.js
+npm test
+npm run smoke
+git ls-remote --heads origin main
+git status --short --branch
+```
+
+### codex — 2026-07-17 20:20 UTC — Add image paste/upload to Conclave chat (blocked)
+
+**State:** `blocked` (the requested work is a new feature on the frozen Conclave v1 product surface; no explicit operator reopen was present)
+
+**Concrete conclusion**
+- `FREEZE.md` says `U:\coding_conclave` is `FROZEN` as of 2026-07-17 and prohibits new work in `src/`, `public/`, and `test/` unless the operator explicitly says `reopen freeze` with paths and objective.
+- The request names `src/server.js` and `public/app.js` / `public/chat-feed.js`, but it does not explicitly reopen the freeze. Per the start-of-run protocol, implementation stopped at the gate.
+- No product source, test, upload data, server process, or Git commit was changed. The pre-existing live Mansion claim and untracked `mars_docs/` tree were left untouched.
+
+**Evidence**
+- `Get-Content -Raw FREEZE.md` -> status `FROZEN`; policy item 1 requires an explicit operator reopen.
+- `git status --short` before this handoff -> pre-existing `M COORDINATION.md` and `?? mars_docs/` only.
+- `git log --oneline -5` -> tip `6510157 docs(mansion): relocate cyberclaw mount path to /media/mars/Mansion`.
+
+**Unblock**
+1. If this feature must land in Conclave v1, the operator must explicitly state: `reopen freeze for image paste/upload`, scoped to `src/server.js`, `public/app.js` and/or `public/chat-feed.js`, supporting styles, relevant tests, and workspace-local upload storage; also state whether the freeze is re-applied after the commit.
+2. Otherwise, dispatch the feature to the active sibling product at `U:\mansion`; this run cannot switch workspaces because the task restricted work to `U:\coding_conclave`.
+
+**Verify (next agent / operator)**
+```powershell
+Get-Content -Raw FREEZE.md
+git status --short
+git log --oneline -5
+```
 
 ### grok — 2026-07-17 19:57 UTC — Relocate remote mount point to /media/mars/Mansion (completed)
 

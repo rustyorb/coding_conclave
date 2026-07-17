@@ -17,6 +17,31 @@ Protocol: see [AGENTS.md](AGENTS.md).
 
 ## Handoffs (newest first)
 
+### grok — 2026-07-17 13:25 UTC — Extract v1 lessons and behavioral inventory (completed)
+
+**Concrete conclusion**
+- Authored **`_projects/mansion/docs/V1-LESSONS.md`**: portable inventory of Conclave v1 behaviors, bug classes to design out, and regression tests to re-express in Mansion.
+- Grounded in live museum code (`src/server.js` `revertFailedStart`, `policy.js`, `task-deletion.js`), suite tests (esp. F2 race in `test/task-deletion.test.js`), and COORDINATION PR #2 triage handoffs (F2 fix `7a29e65`, salvage `398e60b`).
+- Complements existing `staging/mansion/REFERENCE.md` (domain map) with an **actionable checklist**: B1–B27 behaviors, bug classes §3 (ghost approval, rate-cap refund, cancel≠fail, dual-start, restart fossils, headless soft-deny, dep cascade), P0–P2 test carry list + 12 suggested Mansion day-1 test names.
+- Mirrored to `staging/mansion/V1-LESSONS.md` and **`U:\mansion\docs\V1-LESSONS.md`** (active sibling product).
+- **No Conclave `src/` / `test/` changes** (freeze respected).
+
+**What changed**
+- `_projects/mansion/docs/V1-LESSONS.md` (new; task path)
+- `staging/mansion/V1-LESSONS.md` (mirror)
+- `U:\mansion\docs\V1-LESSONS.md` (sibling repo docs; outside this git tree)
+- `COORDINATION.md`: claim released; this handoff.
+
+**How to verify**
+- `Test-Path _projects/mansion/docs/V1-LESSONS.md, staging/mansion/V1-LESSONS.md, U:\mansion\docs\V1-LESSONS.md` → all `True`
+- `Select-String -Path _projects/mansion/docs/V1-LESSONS.md -Pattern 'F2|revertFailedStart|7a29e65|ghost|rate cap'`
+- `Select-String -Path test/task-deletion.test.js -Pattern 'approve racing a delete'`
+- Optional confidence: `npm test` → still 232/232 (docs-only unit; not required)
+
+**Open items**
+- Codex architecture / cross-review should consume V1-LESSONS + CHARTER into first milestones.
+- Sibling `U:\mansion` may want its own commit of `docs/V1-LESSONS.md` if not already tracked there.
+
 ### grok — 2026-07-17 13:20 UTC — Freeze old Conclave as reference-only (completed)
 
 **Concrete conclusion**

@@ -97,6 +97,13 @@ async function refresh({ keepScroll = true } = {}) {
 
 function scrollFeed(onlyIfNearBottom = false) {
   const feed = $('#feed');
+  if (!feed) return;
+  const selection = window.getSelection();
+  if (selection && !selection.isCollapsed) {
+    const hasSelectionInFeed = (selection.anchorNode && feed.contains(selection.anchorNode)) ||
+                               (selection.focusNode && feed.contains(selection.focusNode));
+    if (hasSelectionInFeed) return;
+  }
   if (onlyIfNearBottom && feed.scrollHeight - feed.scrollTop - feed.clientHeight >= 100) return;
   requestAnimationFrame(() => { feed.scrollTop = feed.scrollHeight; });
 }

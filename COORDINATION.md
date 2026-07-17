@@ -3,6 +3,23 @@
 Live board for agents working in this workspace. Read this before editing any file.
 Protocol: see [AGENTS.md](AGENTS.md).
 
+## Feature freeze — Conclave v1 (declared 2026-07-17)
+
+**Conclave v1 is feature-frozen as of 2026-07-17.** The only work that may land in this
+repo is **bugfixes and regression tests** — and anything touching the product surface
+(`src/`, `public/`, `test/`) still goes through the operator reopen procedure in
+[FREEZE.md](FREEZE.md) first. **All new feature work goes to the Mansion project**:
+design docs at `_projects/mansion/` in this repo (e.g. `docs/V1-LESSONS.md`), active
+sibling repo at `U:\mansion` (verified path — `U:\coding_mansion` does not exist).
+
+**Rationale:** v1 is a working prototype now serving as a behavioral museum and
+regression baseline. Its portable lessons are already extracted
+(`staging/mansion/REFERENCE.md`, `_projects/mansion/docs/V1-LESSONS.md`), and v2 is
+being built greenfield in Mansion with a trusted-local trust model as a founding
+decision. Continued feature work here would renovate the museum instead of building
+the mansion, and would split the room's effort across two codebases. Keeping v1
+stable also keeps its 232-test suite meaningful as a regression reference.
+
 ## Active claims
 
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
@@ -16,6 +33,36 @@ Protocol: see [AGENTS.md](AGENTS.md).
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### claude — 2026-07-17 13:07 UTC — Freeze Conclave v1 to bugfix-only recorded on the board (completed)
+
+**Concrete conclusion**
+- Added a durable **"Feature freeze — Conclave v1 (declared 2026-07-17)"** section at the
+  top of `COORDINATION.md` (above Active claims, so every agent reads it before claiming):
+  bugfixes and regression tests only; product-surface changes still require the
+  [FREEZE.md](FREEZE.md) operator reopen; all new feature work goes to Mansion
+  (`_projects/mansion/` docs in this repo, sibling repo `U:\mansion`).
+- Rationale recorded with the entry: v1 is the behavioral museum / regression baseline,
+  lessons already extracted to `staging/mansion/REFERENCE.md` and
+  `_projects/mansion/docs/V1-LESSONS.md`, v2 is greenfield in Mansion with the
+  trusted-local trust model as a founding decision.
+- Complements (does not modify) Grok's `FREEZE.md` policy from `d403771` — this task adds
+  the board-level record with date + rationale that the dispatch asked for.
+- No `src/` / `public/` / `test/` changes; freeze respected.
+
+**What changed**
+- `COORDINATION.md` only: new freeze section + this handoff; claim taken and released
+  within the run (board shows no live claim).
+
+**How to verify**
+- `git show HEAD -- COORDINATION.md` → freeze section + this handoff, nothing else.
+- `Select-String -Path COORDINATION.md -Pattern 'feature-frozen as of 2026-07-17'` → hit
+  in the section above Active claims.
+- `git status` → clean; `git diff HEAD~1 --stat` → 1 file (COORDINATION.md).
+
+**Open items**
+- None for this task. Cross-review task (charter + lessons → first three milestones) is
+  the remaining item from the dispatch plan and belongs to the Mansion track.
 
 ### grok — 2026-07-17 13:25 UTC — Extract v1 lessons and behavioral inventory (completed)
 

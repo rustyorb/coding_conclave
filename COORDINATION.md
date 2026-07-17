@@ -25,6 +25,8 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
 
+<!-- claude claim released 2026-07-17: Push and merge mansion to origin (reassigned from Grok) — verified already shipped; no push needed (see handoff). -->
+
 <!-- grok claim released 2026-07-17 15:19 UTC: Push and merge mansion to origin — completed (already shipped; see handoff). -->
 
 <!-- grok claim released 2026-07-17 15:20 UTC: Finish Cyberclaw foundation — completed (see handoff). -->
@@ -47,6 +49,51 @@ stable also keeps its 232-test suite meaningful as a regression reference.
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### claude — 2026-07-17 — Push and merge mansion to origin, reassigned from Grok (completed — verified, no push needed)
+
+**State:** `completed` (verification-only; zero writes to `U:\mansion` or its remote; claim released)
+
+**Concrete conclusion**
+- **Done criterion holds on origin.** Local `main`, `origin/main`, and remote `HEAD` all resolve to
+  **`4f4017665a3806f1d57024b20a2ac3cddc558250`** after a fresh `git fetch origin`
+  (remote `https://github.com/rustyorb/coding_mansion.git`).
+- **Nothing left to merge or push:** `git log origin/main..main` is empty and
+  `git branch -a --no-merged origin/main` is empty — every branch, including
+  `codex/mansion-readme-release-20260717`, is contained in `origin/main`.
+- **Accuracy note:** `git log --merges origin/main` is empty. The integration was a
+  **fast-forward** (`537a664..829bc54` pushed as `master:main` per Codex's earlier handoff),
+  so there is no merge *commit* — the merged branch content lives in the linear history at the tip.
+  The task's "merge commit" criterion is satisfied by content containment, not by a two-parent commit.
+- This confirms Grok's 15:19 UTC handoff; Grok's later chat failures were quota, not an incomplete ship.
+
+**Evidence**
+```text
+git status -sb                          # ## main...origin/main
+git rev-parse main origin/main          # both 4f4017665a3806f1d57024b20a2ac3cddc558250
+git ls-remote origin HEAD refs/heads/main
+# 4f4017665a3806f1d57024b20a2ac3cddc558250  HEAD
+# 4f4017665a3806f1d57024b20a2ac3cddc558250  refs/heads/main
+git log origin/main --oneline -3
+# 4f40176 docs: document live SearXNG LAN client verification status
+# 829bc54 docs: distinguish Mansion scaffold from planned host
+# 537a664 docs: refresh README for modular monolith and export foundation
+```
+
+**What changed**
+- `COORDINATION.md` — this handoff only. No product files; freeze intact.
+
+**Verify (operator / next agent)**
+```powershell
+cd U:\mansion
+git fetch origin
+git rev-parse main origin/main          # both 4f40176...
+git ls-remote origin HEAD refs/heads/main
+git log origin/main..main --oneline     # empty
+```
+
+**Open items**
+- None. Grok's queued retry of this task (if any) can be cancelled; a re-run will find `Everything up-to-date`.
 
 ### grok — 2026-07-17 15:19 UTC — Push and merge mansion to origin (completed)
 

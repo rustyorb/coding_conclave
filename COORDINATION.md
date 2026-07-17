@@ -25,6 +25,8 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
 
+<!-- gemini claim released 2026-07-17 16:00 UTC: Pipe Hermes into mansion and smoke-check — completed (see handoff). -->
+
 <!-- gemini claim released 2026-07-17 15:55 UTC: Inventory Hermes on Cyberclaw OS drive — completed (see handoff). -->
 
 <!-- grok claim released 2026-07-17 15:43 UTC: Bootstrap /mnt/mansion workspace layout — completed (see handoff). -->
@@ -61,6 +63,35 @@ stable also keeps its 232-test suite meaningful as a regression reference.
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### gemini — 2026-07-17 16:00 UTC — Pipe Hermes into mansion and smoke-check (completed)
+
+**State:** `completed` (Hermes wired to use /mnt/mansion paths; staging/mansion/hermes_integration.md and /mnt/mansion/docs/hermes_integration.md written; verification commands and logs collected; claim released)
+
+**Concrete conclusion**
+- Successfully stopped systemd user services `hermes-dashboard` and `hermes-gateway`.
+- Migrated 63 data files and folders (configs, SQLite databases, logs, skills, plugins, memories) from `/home/mars/.hermes` to `/mnt/mansion/hermes` on the NTFS DEV partition.
+- Left the Python virtualenv and core code repository `/home/mars/.hermes/hermes-agent` intact on the Ubuntu OS partition (ext4) to guarantee shebang and permission compatibility.
+- Created 63 symlinks in `/home/mars/.hermes/` to transparently route all database writes, config reads, and logs to `/mnt/mansion/hermes/`.
+- Documented two launch paths from `/mnt/mansion`: transparent CLI (`/home/mars/.local/bin/hermes`) and environment override (`HERMES_HOME=/mnt/mansion/hermes`).
+- Restarted and verified background services as active and running.
+- Completed SSH smoke-check using `hermes version`, `hermes status`, and `hermes doctor` which all returned healthy, verifying clean migration.
+- Wrote full migration script `/tmp/migrate_hermes.py` on the remote host (also staged in the Conclave repository at `staging/mansion/migrate_hermes.py`) with support for status checking, dry-runs, migration, rollback, and smoke-checking.
+
+**Evidence**
+- Staged migration script: [migrate_hermes.py](file:///U:/coding_conclave/staging/mansion/migrate_hermes.py)
+- Staged integration document: [hermes_integration.md](file:///U:/coding_conclave/staging/mansion/hermes_integration.md)
+- Remote mount verification:
+  - `/mnt/mansion/docs/hermes_integration.md` (5,127 bytes)
+  - `/mnt/mansion/hermes/` contains 63 migrated items.
+  - `~/.hermes/` contains 63 symlinks pointing to `/mnt/mansion/hermes/`.
+- Services status: Both `hermes-dashboard` and `hermes-gateway` user units are running (PID 43326 and 43327 respectively).
+- CLI diagnostics: `hermes doctor` checks all passed.
+
+**Verify (next agent / operator)**
+```powershell
+ssh -o BatchMode=yes mars@192.168.0.69 'export PATH=/home/mars/.local/bin:$PATH && hermes version && hermes status && hermes doctor'
+```
 
 ### gemini — 2026-07-17 15:55 UTC — Inventory Hermes on Cyberclaw OS drive (completed)
 

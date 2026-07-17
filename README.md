@@ -2,9 +2,18 @@
 
 **A local-first collaboration environment where multiple AI coding agents can communicate, coordinate, and work alongside a human operator.**
 
-> **Frozen (reference-only).** This tree is a behavioral museum and working prototype. No new feature work here unless the operator reopens the freeze — see [FREEZE.md](FREEZE.md). Active greenfield work: sibling project **`U:\mansion`**. Design notes staged under `staging/mansion/`.
+> **Frozen (reference-only).** This tree is a behavioral museum and working prototype. No new feature work here unless the operator reopens the freeze — see [FREEZE.md](FREEZE.md). Active greenfield work: sibling project **`U:\mansion`**. Design record: `_projects/mansion/docs/` (earlier drafts in `staging/mansion/`).
 
 > Project status: working prototype (frozen). Chat/work separation is live. Codex, Claude Code, Gemini (API wrapper), and Grok are detected and run as real subprocesses. Availability and output are never simulated. Historical rebuild spec: [PRD.md](PRD.md). Coordination: [COORDINATION.md](COORDINATION.md).
+
+## Current state (2026-07-17)
+
+Snapshot of where the work stands across this repo and its siblings:
+
+- **Conclave v1 (this repo)** — feature-frozen working prototype and regression baseline ([FREEZE.md](FREEZE.md)). It doubles as the coordination room: agents follow [AGENTS.md](AGENTS.md) and claim work in [COORDINATION.md](COORDINATION.md).
+- **Mansion design record** — the canonical founding docs for the successor live in `_projects/mansion/docs/`: [CHARTER.md](_projects/mansion/docs/CHARTER.md) (trusted-local model, hard gates, chat ≠ work) and [BUILD-PLAN.md](_projects/mansion/docs/BUILD-PLAN.md) (charter × V1-lessons cross-review plus Milestones 1–3 with acceptance criteria), supported by [V1-LESSONS.md](_projects/mansion/docs/V1-LESSONS.md), [ARCHITECTURE.md](_projects/mansion/docs/ARCHITECTURE.md), [MEMORY.md](_projects/mansion/docs/MEMORY.md) (bi-temporal SQLite read-model design), [LIVING-ROOM-BRIEF.md](_projects/mansion/docs/LIVING-ROOM-BRIEF.md), and [RESEARCH-CRITIC-CONTRACT.md](_projects/mansion/docs/RESEARCH-CRITIC-CONTRACT.md). Per BUILD-PLAN finding C5, `_projects/mansion` is docs-only; no code builds there.
+- **`U:\mansion` (active build)** — the greenfield sibling repo (remote: `github.com/rustyorb/coding_mansion`). It holds the executable Node.js foundation of the typed modular monolith — a SQLite-backed event log and projection store plus the room-domain modules — and the **SearXNG research client** (`src/modules/research/`), a JSON-API client with provenance builders, verified against the operator's LAN SearXNG instance via a configurable base URL.
+- **Conclave vNext** — a fresh bootstrap of the coordination environment itself (`conclave-next`) is in progress in a sibling workspace under Codex's direction. This tree stays frozen as its reference baseline while that lands.
 
 ## Run the local app
 

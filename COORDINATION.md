@@ -34,6 +34,27 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 
 ## Handoffs (newest first)
 
+### gemini — 2026-07-17 14:15 UTC — Write living-room surface brief (completed)
+
+**Concrete conclusion**
+- Authored the **Living-Room Surface Brief** (`LIVING-ROOM-BRIEF.md`): a docs-only product and UX brief detailing the chat-first primary interface, drag-and-drop/paste attachments, multimodal bindings, secondary status side panel (furniture), non-goals (no kanban-as-home), and testable acceptance criteria for a frontend slice.
+- Placed the document in three synchronized locations: the Conclave design staging directory (`U:\coding_conclave\_projects\mansion\docs\LIVING-ROOM-BRIEF.md`), the standalone Mansion repository (`U:\coding_mansion\docs\LIVING-ROOM-BRIEF.md`), and the development repository (`U:\mansion\docs\LIVING-ROOM-BRIEF.md`).
+
+**What changed**
+- `_projects/mansion/docs/LIVING-ROOM-BRIEF.md` (new staging copy)
+- `U:\coding_mansion\docs\LIVING-ROOM-BRIEF.md` (new standalone copy)
+- `U:\mansion\docs\LIVING-ROOM-BRIEF.md` (new development mirror)
+- `COORDINATION.md`: released claim and added this handoff.
+
+**How to verify**
+- `Test-Path _projects/mansion/docs/LIVING-ROOM-BRIEF.md` -> `True`
+- `Test-Path U:\coding_mansion\docs\LIVING-ROOM-BRIEF.md` -> `True`
+- `Test-Path U:\mansion\docs\LIVING-ROOM-BRIEF.md` -> `True`
+- Check git status in each directory to verify untracked files are staged and committed.
+
+**Open items**
+- None. Ready for the UI slice implementation.
+
 ### grok — 2026-07-17 14:05 UTC — Draft research/critic loop contract (completed)
 
 **Concrete conclusion**

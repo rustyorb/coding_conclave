@@ -17,6 +17,27 @@ Protocol: see [AGENTS.md](AGENTS.md).
 
 ## Handoffs (newest first)
 
+### claude — 2026-07-17 10:15 UTC — Fossil quarantine verified intact post-restart: 0 fossils eligible, all 7 watchdog requeues were live chain work (completed)
+
+**Concrete conclusion**
+- The 2026-07-16 22:40 UTC quarantine (73 fossils rejected+archived, 3 live tasks requeued) **held across the server restart**. Raw `.conclave/state.json`: 75 rejected (73 with `archivedAt: 2026-07-16T22:40Z`, 2 pre-existing unarchived rejects `ca7c636f`/`900f756e`); zero rejected tasks have an `updatedAt` after the archive time. The task card's premise ("69 blocked + 6 waiting") predates that run — current live counts: **blocked 0 · waiting 0 · ready 7 · active 1 · rejected 75 · completed 104 · failed 1 · cancelled 1 (189 total)**. Nothing left to quarantine or requeue; no board mutations were made this run.
+- The idle watchdog **was already live before this run started** (fired 2026-07-17 09:51:22Z with a ~1m idle interval — someone restarted the server with `CONCLAVE_IDLE_INTERVAL_MS` set short). Its `idle-watchdog.fired` audit record lists exactly 7 `requeuedTaskIds` — all six overnight-chain cards (`0f8e26b9` heartbeat-UI takeover, `7019ff5b` verify quarantine, `24004175` quarantine backlog, `449a9d8f` Gemini recovery, `532b6f7a` heartbeat bring-live, `9184ba95` deletion gates) plus this task (`50dcb0b1`). **Zero fossils reanimated.** I did not enable, configure, or touch the heartbeat/watchdog.
+- No-reanimation proof, run against the code the restarted server loaded: drainer launches only `status==='ready'` with met deps (`src/server.js:937-941`); watchdog wakes only ready + restart-blocked with recoverable blocker, non-failed deps, and standing write authority (`src/lib/idle-watchdog.js:57-72`); requeue API 400s on non-blocked (`src/server.js:1918`); transitions route accepts only `proposed` (`:1827`); approval decisions promote only `waiting` (`:1096`); auto-retry runs only in the execution-finish path of a just-failed run, policy-gated (`:805-824`); unarchive (`:1880`) flips visibility only — status stays `rejected`, still unrunnable. Executing the live `listEligibleIdleWork` against current state returns 7 ready / 0 requeueable / **0 rejected-or-archived among eligible**.
+- New operator card `task_8c331979` ("install a repo in the _projects folder up one level") appeared ready mid-run — live operator work, untouched, will drain once the writer gate frees.
+
+**What changed**
+- `COORDINATION.md` only (this handoff). No source, test, UI, or board-state changes.
+
+**How to verify**
+- Counts: `(iwr http://127.0.0.1:4317/api/state | ConvertFrom-Json).tasks | Group-Object status` → 0 blocked, 0 waiting, 75 rejected.
+- Fossil integrity + eligibility: `node -e "const {listEligibleIdleWork}=require('./src/lib/idle-watchdog.js');const s=require('./.conclave/state.json');const {ready,requeueable}=listEligibleIdleWork(s);console.log(ready.length,requeueable.length,[...ready,...requeueable].filter(t=>t.status==='rejected'||t.archivedAt).length)"` → `7 0 0`.
+- Watchdog requeue trail: `node -e "const s=require('./.conclave/state.json');console.log(JSON.stringify(s.audit.filter(a=>a.type==='idle-watchdog.fired'),null,1))"` → one event, 7 requeuedTaskIds, none rejected/archived.
+
+**Open items**
+- **Chain-order flag for Grok/operator:** the watchdog is ticking *now* (step 3 fired before steps 1-2 were formally verified). No harm occurred — the backlog was already clean — but Grok's preflight card (`7019ff5b`) and the bring-live card (`532b6f7a`) still show ready and should reconcile with the fact that the timer is already running at a ~1m interval. Note: quiet ticks are silent (`{acted:false}` posts nothing); the watchdog posts to room chat only when it acts.
+- Gemini's failed heartbeat-UI task (`8b061edd`, status failed) and the cancelled bring-live duplicate (`f89e2323`) are terminal and watchdog-ineligible; their ready replacement cards exist. Leave them.
+- The open-mode restart gate (Codex's DELETE route) is unaffected by this run; fossils remain archived, not deleted.
+
 ### grok — 2026-07-17 03:22 UTC — AGENTS.md operating protocol authored, committed, pushed (completed)
 
 **Concrete conclusion**

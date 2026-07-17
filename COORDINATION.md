@@ -17,6 +17,29 @@ Protocol: see [AGENTS.md](AGENTS.md).
 
 ## Handoffs (newest first)
 
+### claude — 2026-07-17 10:50 UTC — Restart gates written; open-mode restart found ALREADY DONE — deletion API live, open access live, no restart performed (completed)
+
+**Concrete conclusion**
+- **The open-mode restart this task was written to gate already happened.** The live server on port 4317 (PID 24776, `node src/server.js`, booted 2026-07-17 09:51:47 UTC — the post-quarantine boot) is running current disk code: it projects `taskDeletions` on `/api/state`, and a mutation-free probe (`DELETE /api/tasks/task_probe-nonexistent-0000` with mismatched `confirmTaskId`, no token) returned **HTTP 400 `{"error":"Confirm deletion with the exact task id"}`** — not 403. That single response proves both post-restart gates at once: the DELETE route exists in the running process (`src/server.js:1863`), and the untokened mutation passed the auth gate, which only happens when `openAccess` is true (`src/server.js:2087-2090`). Codex's DELETE route is usable **now**; no bounce is needed for it.
+- **Token trap accounted for:** memory/backup governance is still explicitly token-gated even in open mode — untokened `GET /api/memory/items` → 403 (by design, `src/server.js:2102-2108`). The per-boot token was printed only on PID 24776's console; if that console is lost, memory routes stay locked until the next restart. Mitigation documented in the gates: pin `CONCLAVE_TOKEN` before future launches.
+- **No restart was performed**, per the task's own rule: gate G1 (no active mid-write agents) fails during any board-dispatched run — this run itself was the active workspace-write task/execution. That is structural, not situational: a board agent bouncing the server kills its own process mid-run and re-creates restart-blocked fossils. The bounce is operator-side only.
+- **Exact gates written** to `docs/restart-gates.md`: G1 no-mid-write (state probes + self-reference trap), G2 launcher/env (`start-open.cmd`, keep console or pin `CONCLAVE_TOKEN`, check for leftover `CONCLAVE_IDLE_INTERVAL_MS` — the 09:51Z boot inherited a ~1m interval), G3 stop only the 4317 listener (orphan PID 27140 hazard), G4 deletion-API probe (expected 400 wording), G5 open-mode proof + memory-403-is-correct, G6 board integrity (75 rejected fossils, 0 wakeable via `listEligibleIdleWork`). Plus the boot-time interruption semantics (`src/server.js:358-388`) explaining *why* each gate exists.
+- Precondition confirmed this run: full suite green — `npm test` → **227/227 pass** (6.0s).
+
+**What changed**
+- `docs/restart-gates.md` (new): the gates document.
+- `COORDINATION.md`: this handoff. No source, test, board-state, or server changes; no restart.
+
+**How to verify**
+- `npm test` → 227/227.
+- Deletion route + open mode live: re-run the G4 probe from `docs/restart-gates.md` → 400 with the confirmation-required wording (probe is mutation-free: it fails validation before any state change, `src/lib/task-deletion.js:23-27`).
+- Memory still token-gated: `iwr http://127.0.0.1:4317/api/memory/items -SkipHttpErrorCheck` → 403.
+- Listener identity: `Get-NetTCPConnection -LocalPort 4317 -State Listen` → PID 24776, boot 09:51:47Z (`Get-CimInstance Win32_Process -Filter "ProcessId=24776"`).
+
+**Open items**
+- Operator, when convenient: capture PID 24776's console token URL (or plan a `CONCLAVE_TOKEN`-pinned relaunch at the next gated bounce) so memory governance stays reachable; and clean up orphan node PID 27140 (not bound to 4317) when sure.
+- Next bounce (whenever one is actually needed) should follow `docs/restart-gates.md` G1→G6 verbatim; no bounce is currently required.
+
 ### claude — 2026-07-17 10:25 UTC — Gemini stall triage: chat lane alive, tool use broken by agy 1.1.3 headless permission deny; no backfill eligible (completed)
 
 **Concrete conclusion**

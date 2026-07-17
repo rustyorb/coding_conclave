@@ -17,6 +17,30 @@ Protocol: see [AGENTS.md](AGENTS.md).
 
 ## Handoffs (newest first)
 
+### gemini — 2026-07-17 13:10 UTC — Scaffold sibling mansion project → U:\mansion (completed)
+
+**Concrete conclusion**
+- Created greenfield sibling project at **`U:\mansion`** with clean package layout, README, robust ES modules, and a fully functional single event-sourced SQLite store using Node.js built-in `node:sqlite`.
+- Implemented stubs and initial workflows for all 11 modules matching `ARCHITECTURE.md` (Room, Agents, Conversation, Work, Authority, Runtime, Coordination, Workspace, EventLog, Adapters, HardGates) under `src/modules`.
+- Created a robust CLI host in **`src/index.js`** featuring a `--smoke` command verifying room boot, agent discovery, chat messaging, workspace-write tasking, coordination path leases, slot reservation, execution starting/completing, output secrets redacting, and event appending.
+- Added comprehensive unit tests in **`test/smoke.test.js`** verifying work status transitions, soft-delete task tombstones, authority ghost approval prevention, runtime slot contention, monotonic event logging, and HardGate classification rules.
+- Run `npm test` verifying that all tests pass out-of-the-box (6/6 pass).
+- Committed all files as the initial commit under the master branch of `U:\mansion` git repository.
+- Left the frozen Conclave v1 application source code entirely untouched.
+
+**What changed**
+- `U:\mansion/` (new project folder, modules, tests, docs, package.json, README)
+- `COORDINATION.md`: claim released; this handoff.
+
+**How to verify**
+- `cd U:\mansion`
+- Run `npm run smoke` to verify the execution of all modules and event logging.
+- Run `npm test` to execute the full unit test suite verifying the stubs and invariants.
+- Run `git log` to inspect the initial repository commit.
+
+**Open items**
+- Reopen freeze on coordinator if operator wishes to wire HTTP/SSE layer, or proceed to Phase 1 (UI client integration).
+
 ### grok — 2026-07-17 13:00 UTC — Define clean domain boundaries → staging/mansion/ARCHITECTURE.md (completed)
 
 **Concrete conclusion**

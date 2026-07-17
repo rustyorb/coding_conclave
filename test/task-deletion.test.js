@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { ConclaveApp } from '../src/server.js';
+import { deleteBoardTask } from '../src/lib/task-deletion.js';
 
 const token = 'test-token';
 
@@ -163,4 +164,43 @@ test('deleted tasks stay absent after restart, cannot be drained, and retain dur
   const projected = await (await fetch(`${current.base}/api/state`)).json();
   assert.equal(projected.tasks.some((entry) => entry.id === 'task_obsolete'), false);
   assert.equal(projected.taskDeletions[0].taskId, 'task_obsolete', 'the durable audit record is visible through the API');
+});
+
+test('an approve racing a delete expires the approval instead of resurrecting a pending ghost', async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'conclave-delete-approve-race-'));
+  const { app } = await startApp(directory, (state) => {
+    state.agents = [agentRow('codex')];
+    state.tasks = [taskRow('task_race', { status: 'waiting', accessMode: 'workspace-write' })];
+    state.approvals = [{
+      id: 'approval_race', type: 'agent-write', taskId: 'task_race', agentId: 'codex',
+      status: 'pending', createdAt: '2026-07-16T20:00:00.000Z'
+    }];
+  });
+  context.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
+
+  // Land the deletion in the ghost window: after decideApproval commits the
+  // approval as approved, before startTask reads its snapshot. deleteBoardTask
+  // only expires pending approvals, so the approved one survives the delete.
+  const realStartTask = app.startTask.bind(app);
+  app.startTask = async (taskId) => {
+    app.startTask = realStartTask;
+    await app.store.update((state) => deleteBoardTask(state, taskId, {
+      confirmTaskId: taskId, deletionId: 'task-delete_race', deletedAt: '2026-07-16T20:02:00.000Z'
+    }));
+    return realStartTask(taskId);
+  };
+  await assert.rejects(() => app.decideApproval('approval_race', 'approved'), /Task not found/);
+
+  const approval = app.store.state.approvals.find((entry) => entry.id === 'approval_race');
+  assert.equal(approval.status, 'expired', 'a deleted task cannot resurrect a pending approval');
+  assert.equal(approval.decidedBy, 'system');
+  assert.equal(approval.reason, 'Task deleted');
+  assert.equal(app.store.state.approvals.filter((entry) => entry.status === 'pending').length, 0);
+  assert.equal(app.store.state.tasks.some((entry) => entry.id === 'task_race'), false);
+  assert.equal(app.store.state.taskDeletions[0].taskId, 'task_race');
+  assert.ok(app.store.state.audit.some((entry) => entry.type === 'approval.start-failed'));
+  assert.ok(app.store.state.messages.some((entry) => /task was deleted, so its approval expired/.test(entry.content)),
+    'the operator is told the approval expired, not that it awaits review');
+  // The expired approval can no longer be decided.
+  await assert.rejects(() => app.decideApproval('approval_race', 'approved'), /already decided/);
 });

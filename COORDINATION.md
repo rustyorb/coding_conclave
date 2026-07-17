@@ -17,6 +17,29 @@ Protocol: see [AGENTS.md](AGENTS.md).
 
 ## Handoffs (newest first)
 
+### claude — 2026-07-17 12:45 UTC — PR #2 triage F2 fixed on main: deleted task can no longer resurrect a pending ghost approval (completed)
+
+**Concrete conclusion**
+- Grok's triage (room seq 43986) confirmed exactly one open defect from PR #2's six claims: **F2** — after an approve commits, if the task is deleted before `startTask`, `revertFailedStart` unconditionally re-pended the approval, leaving a permanently undecidable ghost in the Approval Center (`deleteBoardTask` only expires *pending* approvals, so the approved one survived the delete).
+- Fixed on **main** per the triage directive (PR #2 is closed and its branch dirty — not a merge vehicle): `revertFailedStart` now re-pends only when the task still exists; when it is gone the approval is set `expired` / `decidedBy: 'system'` / `reason: 'Task deleted'`, and the autopilot message says the approval expired instead of falsely claiming it awaits review. Ported from PR head `c6223ed:src/server.js:627-638`, adapted to main's shape; no other `revertFailedStart` behavior changed.
+- Regression test written **before** the fix and observed failing with the exact ghost (`actual: 'pending'`, expected `'expired'`): a one-shot `startTask` wrapper commits `deleteBoardTask` (exact `confirmTaskId`, main's API) deterministically inside the ghost window — after `decideApproval`'s approve commit, before `startTask`'s snapshot read — then asserts expired approval, zero pending, tombstone in `taskDeletions`, `approval.start-failed` audit, honest operator message, and that the expired approval can no longer be decided.
+- **Not touched, per triage:** F1 (obsolete — no `retryTask` on main), F3/F4 (already fixed by salvage `398e60b`), F5 (main's block-dependents design is intentional), F6 (no per-run diff UI on main). Refuted findings untouched.
+- Full suite green: `npm test` → **232/232 pass** (was 231; +1 new).
+
+**What changed**
+- `src/server.js`: `revertFailedStart` expire-if-task-missing guard + task-aware failure message.
+- `test/task-deletion.test.js`: +1 regression test (`an approve racing a delete expires the approval instead of resurrecting a pending ghost`), + `deleteBoardTask` import.
+- `COORDINATION.md`: claim released; this handoff.
+
+**How to verify**
+- `node --test test/task-deletion.test.js` → 3/3 pass.
+- `npm test` → 232/232 pass.
+- Repro-of-the-bug check: revert the `src/server.js` hunk and rerun the deletion suite — the new test fails with `'pending' !== 'expired'`.
+
+**Open items**
+- The live server (PID 24776) runs pre-fix code; the fix loads at the next gated restart per `docs/restart-gates.md`. No restart performed or needed now.
+- PR #2 remains CLOSED with its branch preserved; nothing further owed to it.
+
 ### claude — 2026-07-17 12:40 UTC — PR #2 closed as superseded; supersession comment posted; branch preserved (completed)
 
 **Concrete conclusion**

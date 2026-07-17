@@ -1408,10 +1408,15 @@ export class ConclaveApp {
     const detail = publicError(error);
     await this.store.update((state) => {
       const approval = state.approvals.find((entry) => entry.id === approvalId);
-      if (approval && ['approved', 'auto-approved'].includes(approval.status)) {
-        Object.assign(approval, { status: 'pending', decidedAt: null, decidedBy: null, reason: null });
-      }
       const task = state.tasks.find((entry) => entry.id === taskId);
+      if (approval && ['approved', 'auto-approved'].includes(approval.status)) {
+        // A task deleted between the approval commit and the start can never be
+        // started; re-pending its approval would resurrect an undecidable ghost.
+        // Expire it (mirroring deleteBoardTask's expiry of pending gates) and
+        // only re-pend for the genuine pause/agent-unavailable retry cases.
+        if (task) Object.assign(approval, { status: 'pending', decidedAt: null, decidedBy: null, reason: null });
+        else Object.assign(approval, { status: 'expired', decidedAt: now(), decidedBy: 'system', reason: 'Task deleted' });
+      }
       if (task?.status === 'active' && !task.executionId) {
         Object.assign(task, { status: 'waiting', updatedAt: now() });
         const agent = state.agents.find((entry) => entry.id === task.agentId);
@@ -1420,7 +1425,9 @@ export class ConclaveApp {
       state.audit.push({ id: id('audit'), type, approvalId, taskId, detail, createdAt: now() });
       state.messages.push({
         id: id('msg'), source: 'system', sourceName: 'Conclave', type: 'autopilot',
-        content: clampText(`Could not start the run (${detail}); the request was returned to the Approval Center for manual review.`),
+        content: clampText(task
+          ? `Could not start the run (${detail}); the request was returned to the Approval Center for manual review.`
+          : `Could not start the run (${detail}); the task was deleted, so its approval expired.`),
         taskId, createdAt: now()
       });
     });

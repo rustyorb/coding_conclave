@@ -25,6 +25,8 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
 
+<!-- grok claim released 2026-07-17: Provision DEV disk /mnt/mansion — safety gate ABORT (see handoff). -->
+
 <!-- gemini claim released 2026-07-17: Established SSH key access and verified connectivity to Cyberclaw. -->
 
 <!-- grok claim released 2026-07-17: Cyberclaw DEV mount blocked on SSH pubkey auth (see handoff below). -->
@@ -35,6 +37,55 @@ stable also keeps its 232-test suite meaningful as a regression reference.
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### grok — 2026-07-17 15:01 UTC — Provision DEV disk and mount /mnt/mansion on Cyberclaw (blocked — safety gate)
+
+**State:** `blocked` (no remote writes; claim released)
+
+**Concrete conclusion**
+- Key-auth SSH works: `ssh -o BatchMode=yes mars@192.168.0.69` → host `cyberclaw`, user `mars`.
+- Passwordless sudo works: `sudo -n true` and `sudo -n parted -l` succeeded (no password needed; no operator grant required for sudo).
+- **SAFETY GATE ABORT — no partition, mkfs, mount, fstab, chown, or chmod was performed.**
+- There is **no empty ~500 GB whole disk labeled DEV**. Two physical disks only:
+  - `/dev/nvme0n1` 1.8T WD_BLACK SN7100 — GPT, fully partitioned
+  - `/dev/nvme1n1` 476.9G Micron — Windows install (do not touch)
+- Sole LABEL=`DEV` match is **one partition**: `/dev/nvme0n1p3` (401.2G), not a free disk.
+- Gate failures on that candidate:
+  1. **Existing filesystem with data:** FSTYPE=`ntfs`, LABEL=`DEV`, UUID=`A0B8277DB82750D8`
+  2. **Already mounted:** `/media/mars/DEV` (ntfs3, uid=1000,gid=1000 via udisks2)
+  3. **Not empty:** `df` shows 110M used; listing has `$RECYCLE.BIN`, `desktop.ini`, `System Volume Information`
+- `/mnt/mansion` does **not** exist yet.
+- Nearby unused volume (not in scope, do not use without operator OK): `nvme0n1p6` LABEL=`Ouroboros` ext4 233.1G **unmounted**.
+
+**lsblk -f evidence (before; unchanged after — no writes)**
+```text
+nvme0n1
+├─nvme0n1p2 ntfs  AI   5A7EF3C97EF39C47  … /media/mars/AI
+├─nvme0n1p3 ntfs  DEV  A0B8277DB82750D8  … /media/mars/DEV   ← only DEV match
+├─nvme0n1p4 ext4       9caadf4d-…         … /
+├─nvme0n1p5 vfat       B1F2-739D          … /boot/efi
+└─nvme0n1p6 ext4  Ouroboros 43c3f5d6-…    (unmounted)
+nvme1n1  … Windows partitions
+```
+
+**What changed**
+- `COORDINATION.md` — this handoff only. **Zero changes on Cyberclaw.**
+
+**Operator must choose one path before any agent formats/mounts**
+| Option | Meaning | Risk |
+|--------|---------|------|
+| **A — Keep NTFS** | Bind or remount DEV at `/mnt/mansion` with `uid=1000,gid=1000` (or fstab by UUID `A0B8277DB82750D8`), **no mkfs** | Safe; preserves residual NTFS metadata |
+| **B — Reformat to ext4** | Explicit OK to wipe `nvme0n1p3`, then GPT is already present — just `mkfs.ext4 -L mansion`, mount `/mnt/mansion`, fstab UUID `nofail`, `chown mars:mars`, `chmod 755` | **Destroys** current NTFS on DEV |
+| **C — Different volume** | e.g. use unmounted `Ouroboros` (`nvme0n1p6`) or add a real empty disk | Needs explicit target + wipe OK |
+
+**How to verify (re-run safety inventory)**
+```powershell
+ssh -o BatchMode=yes mars@192.168.0.69 "sudo -n true && lsblk -f && findmnt /media/mars/DEV && df -h /media/mars/DEV; ls -ld /mnt/mansion"
+```
+
+**Open items**
+- Operator decision A / B / C (or equivalent).
+- After decision, re-dispatch mount task with that scope; agent should re-run safety checks before writes.
 
 ### claude — 2026-07-17 15:20 UTC — Bootstrap SSH key auth to Cyberclaw (completed)
 

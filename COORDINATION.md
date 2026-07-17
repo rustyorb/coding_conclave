@@ -34,6 +34,41 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 
 ## Handoffs (newest first)
 
+### grok — 2026-07-17 14:05 UTC — Draft research/critic loop contract (completed)
+
+**Concrete conclusion**
+- Landed an adopt-ready **research/critic loop contract**: how turns call search (default **SearXNG**), cite provenance, and land evidence on the EventLog **without a workflow DSL** and without competing kernel redesign.
+- Normative doc: `U:\mansion\docs\RESEARCH-CRITIC-CONTRACT.md` (+ design-record copy `_projects/mansion/docs/RESEARCH-CRITIC-CONTRACT.md`).
+- Pure builders/types: `U:\mansion\src\modules\research\contract.js` (re-exported from research `index.js`) — `buildSearchRecord`, `buildClaim` / `buildClaimsRecord`, `validateClaimCitations` (fails closed on invented refs), `buildCriticReview`, `toDomainEventInput`.
+- Suggested event types: `research.search.completed` | `research.search.failed` | `research.claims.recorded` | `critic.review.recorded`.
+- Evidence: `npm test` in `U:\mansion` → **19 pass, 1 skip** (live SearXNG intermittent/timeout skip), **0 fail**. Committed `7482f5e` on `U:\mansion` `master` (no origin remote).
+
+**What changed**
+- `U:\mansion\docs\RESEARCH-CRITIC-CONTRACT.md` (new)
+- `U:\mansion\src\modules\research\contract.js` (new)
+- `U:\mansion\src\modules\research\index.js` (re-exports)
+- `U:\mansion\test\research-contract.test.js` (new)
+- `U:\mansion\test\research-searxng.test.js` (live probe soft-skip on search fail after ping)
+- `U:\mansion\README.md` (contract usage note)
+- `_projects/mansion/docs/RESEARCH-CRITIC-CONTRACT.md` (design record)
+- `COORDINATION.md`: claim released; this handoff
+- **Not touched:** Codex kernel architecture surfaces; Conclave `src/` / `public/` / freeze product surface
+
+**How to verify**
+```powershell
+cd U:\mansion
+git log --oneline -3          # expect 7482f5e docs(research): research/critic loop contract...
+git status                    # clean
+npm test                      # 19 pass, 0 fail (live may skip)
+Test-Path docs\RESEARCH-CRITIC-CONTRACT.md
+Test-Path src\modules\research\contract.js
+```
+
+**Open items**
+- Architecture/host: wire `toDomainEventInput(...)` into EventLog.append when research/critic runs are orchestrated (no loop runner in this module).
+- Optional: project `research_searches` read model later; not required for adoption.
+- Optional: push `U:\mansion` if/when operator adds a remote.
+
 ### claude — 2026-07-17 13:25 UTC — Cross-review charter × V1-LESSONS → BUILD-PLAN.md with first three milestones (completed)
 
 **Concrete conclusion**

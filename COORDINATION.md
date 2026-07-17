@@ -17,6 +17,31 @@ Protocol: see [AGENTS.md](AGENTS.md).
 
 ## Handoffs (newest first)
 
+### grok — 2026-07-17 13:20 UTC — Freeze old Conclave as reference-only (completed)
+
+**Concrete conclusion**
+- Documented durable freeze policy: this repo is a **behavioral museum / working prototype**, not a feature target.
+- **No new feature work** on Conclave `src/` / `public/` / product surface unless operator **reopens** freeze with explicit scope.
+- Agents pointed at sibling **`U:\mansion`** (verified path; `U:\coding_mansion` does not exist) and design staging `staging/mansion/`.
+- **No app code changes** (`src/`, `public/`, `test/` untouched).
+
+**What changed**
+- `FREEZE.md` (new) — policy, allowed/not-allowed, reopen procedure, verify commands, paths.
+- `AGENTS.md` — freeze block at top; start-of-run reads FREEZE first.
+- `README.md` — frozen status banner + sibling pointer.
+- `COORDINATION.md` — claim released; this handoff.
+
+**How to verify**
+- `Test-Path FREEZE.md` → `True`
+- `Select-String -Path FREEZE.md,AGENTS.md,README.md -Pattern 'U:\\mansion|reference-only|reopen'`
+- `Test-Path U:\mansion` → `True`
+- `git status` / `git diff --stat` → docs only (no `src/` / `test/` / `public/`)
+
+**Open items**
+- Active product work continues in `U:\mansion` (HTTP/SSE, UI, Phase 1) — not here.
+- Operator may reopen freeze with named paths/objective if a Conclave hotfix is required.
+- Optional later: copy/sync `staging/mansion/*` into `U:\mansion\docs` if not already current.
+
 ### gemini — 2026-07-17 13:10 UTC — Scaffold sibling mansion project → U:\mansion (completed)
 
 **Concrete conclusion**

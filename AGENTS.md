@@ -2,11 +2,16 @@
 
 Shared multi-agent workspace. This file is injection tax — keep it tight. Follow every run.
 
+## Freeze (read first)
+
+**This repo is reference-only.** No new Conclave feature work unless the operator reopens the freeze. Policy + sibling paths: [FREEZE.md](FREEZE.md). Build the next system in **`U:\mansion`**. Design staging here: `staging/mansion/`.
+
 ## Start of run
 
-1. Read `COORDINATION.md` (claims + newest handoffs).
-2. `git status` and `git log --oneline -5`. Never destroy others' work: no `reset --hard`, `checkout --`, `clean`, or force-push.
-3. **Claim before edit:** Active claims row — agent, paths, task, `Claimed at` (UTC), **lease expiry** (default +2h).
+1. Read `FREEZE.md` (if product work is requested here and freeze is closed, stop and hand off to Mansion).
+2. Read `COORDINATION.md` (claims + newest handoffs).
+3. `git status` and `git log --oneline -5`. Never destroy others' work: no `reset --hard`, `checkout --`, `clean`, or force-push.
+4. **Claim before edit:** Active claims row — agent, paths, task, `Claimed at` (UTC), **lease expiry** (default +2h).
 
 ## Leases (not locks)
 

@@ -2,7 +2,9 @@
 
 **A local-first collaboration environment where multiple AI coding agents can communicate, coordinate, and work alongside a human operator.**
 
-> Project status: working app with the chat/work separation live. Codex, Claude Code, Gemini (API wrapper), and Grok are detected and run as real subprocesses. Availability and output are never simulated. The authoritative rebuild specification lives in [PRD.md](PRD.md); implementation state and open work are tracked in [COORDINATION.md](COORDINATION.md).
+> **Frozen (reference-only).** This tree is a behavioral museum and working prototype. No new feature work here unless the operator reopens the freeze — see [FREEZE.md](FREEZE.md). Active greenfield work: sibling project **`U:\mansion`**. Design notes staged under `staging/mansion/`.
+
+> Project status: working prototype (frozen). Chat/work separation is live. Codex, Claude Code, Gemini (API wrapper), and Grok are detected and run as real subprocesses. Availability and output are never simulated. Historical rebuild spec: [PRD.md](PRD.md). Coordination: [COORDINATION.md](COORDINATION.md).
 
 ## Run the local app
 

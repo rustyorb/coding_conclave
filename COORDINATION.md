@@ -17,6 +17,24 @@ Protocol: see [AGENTS.md](AGENTS.md).
 
 ## Handoffs (newest first)
 
+### codex — 2026-07-17 10:10 UTC — Fossil quarantine task reconciled without replay: 73 terminal, exactly 3 named REQUEUE cards (completed)
+
+**Concrete conclusion**
+- This promoted card was stale: Claude had already applied the triage through the live API on 2026-07-16 22:40 UTC. I did not replay the idempotent-hostile executor and made no board/state mutation.
+- Current disk and live API state agree: 189 tasks; 73 tasks from the quarantine window are `rejected` + archived; blocked 0; waiting 0. All 73 remain terminal, none changed after the quarantine finished, and `listEligibleIdleWork` returns zero fossil/rejected/archived candidates.
+- The only triage REQUEUE IDs are `task_152dc007-8112-4efe-9812-a7928fbb3041` (Resolve summary audit findings), `task_157af431-499f-4337-b187-0ecb1fc49089` (Implement Phase 1 capability verification profiles), and `task_78a5b232-3739-4420-949b-4cc02bc318d6` (Add capability badges to UI). They were left Ready behind the active one-writer gate during quarantine, then ran later and are now completed+archived. This run did not requeue or start them.
+- Saved classification check reports 73 FOSSIL / 3 REQUEUE, stranded 0, stranded-but-unclassified 0, pending task approvals 0, and live non-fossil dependents on fossils 0. No broad blocked-pile requeue occurred in this run.
+
+**Files and commands used**
+- Read only: `.conclave/state.json`, `src/lib/idle-watchdog.js`, `deferred-tests/quarantine-plan.mjs`; changed only `COORDINATION.md`.
+- `node deferred-tests/quarantine-plan.mjs` → 3 named REQUEUE, 73 rejected FOSSIL, 0 stranded/unclassified, 0 live non-fossil dependents.
+- Inline Node probe loading `.conclave/state.json` + `listEligibleIdleWork` → ready 5, requeueable 0, eligible fossils 0, eligible rejected/archived 0.
+- `Invoke-RestMethod http://127.0.0.1:4317/api/state` count probe → total 189, blocked 0, waiting 0, rejected 75, rejected+archived 73.
+- `git diff --check -- COORDINATION.md` → clean except the existing LF→CRLF warning.
+
+**Open items**
+- None for fossil quarantine. The three REQUEUE tasks are historical completed work now; do not requeue them again.
+
 ### claude — 2026-07-17 10:10 UTC — Per-agent heartbeat UI landed (took over from Gemini); failed card 8b061edd parked (completed)
 
 **Concrete conclusion**

@@ -34,6 +34,37 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 
 ## Handoffs (newest first)
 
+### grok — 2026-07-17 13:40 UTC — Wire local SearXNG research client (completed)
+
+**Concrete conclusion**
+- Implemented a thin mansion research client against local SearXNG JSON API at **`http://192.168.0.177:8888`** (live probe returned 200 during this run).
+- Client lives in the **active sibling product** `U:\mansion` (per FREEZE), not Conclave `src/`.
+- Configurable base URL (`createSearxngClient({ baseUrl })` or env `MANSION_SEARXNG_URL`), structured `ResearchHit` results, **no secrets**, graceful structured failures (`offline` | `timeout` | `http` | `parse` | `invalid` | `aborted`) — network errors do not throw.
+- Evidence: mock unit tests + live test against LAN instance; full suite **15/15 pass**.
+- Committed as `b4c0a04` on `U:\mansion` `master` (local repo; no origin remote configured — not pushed).
+
+**What changed**
+- `U:\mansion\src\modules\research\index.js` (new) — `createSearxngClient`, `mapSearxngHit`, `resolveSearxngBaseUrl`, `ping`
+- `U:\mansion\test\research-searxng.test.js` (new) — mock + optional live probe
+- `U:\mansion\README.md` — LAN endpoint / env / usage note
+- `COORDINATION.md`: claim released; this handoff
+- **Not touched:** Codex kernel architecture surfaces; Conclave `src/` / freeze product surface; `_projects/mansion` nested scaffold (mirror optional follow-up)
+
+**How to verify**
+```powershell
+cd U:\mansion
+git log --oneline -3          # expect b4c0a04 feat(research): thin SearXNG JSON client...
+git status                    # clean
+npm test                      # 15 pass (live probe skips only if SearXNG down)
+# optional direct API probe:
+# Invoke-WebRequest "http://192.168.0.177:8888/search?q=test&format=json" -UseBasicParsing
+```
+
+**Open items**
+- Wire client into research/critic loop contract (provenance on the record) when that contract lands.
+- Optional: mirror the same module into `_projects/mansion` if the room keeps that nested tree in lockstep with `U:\mansion`.
+- Optional: add `git remote` + push for `U:\mansion` if operator wants shared remote tracking.
+
 ### gemini — 2026-07-17 13:20 UTC — Scaffold mansion repo skeleton (completed)
 
 **Concrete conclusion**

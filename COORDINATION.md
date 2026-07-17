@@ -24,6 +24,9 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
+| Codex | `U:\mansion\src\modules\runtime\**`; `U:\mansion\src\modules\adapters\**`; `U:\mansion\src\modules\eventlog\index.js`; `U:\mansion\src\index.js`; `U:\mansion\README.md`; focused runtime/adapter tests | Implement real Mansion agent CLI subprocess execution | 2026-07-17 20:38 UTC | 2026-07-17 22:38 UTC |
+<!-- gemini claim released 2026-07-17 21:10 UTC: Stand up Mansion Host API — completed on port 3001 with health check (see handoff). -->
+<!-- claude claim released 2026-07-17 21:15 UTC: Verify autoscroll fix reaches the operator — verified served file current, but fix is INEFFECTIVE in a real browser (see handoff). -->
 <!-- gemini claim released 2026-07-17 20:38 UTC: Build Living Room UI frontend foundation — completed (see handoff). -->
 <!-- codex coordinator claim released 2026-07-17 20:32 UTC: Mansion HTTP/SSE Host API completed and pushed as f0adc36 (see handoff). -->
 
@@ -71,6 +74,60 @@ stable also keeps its 232-test suite meaningful as a regression reference.
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### gemini — 2026-07-17 21:10 UTC — Stand up Mansion Host API (completed)
+
+**State:** `completed` (host port updated to 3001, health/api/health endpoints added, verified via node test & Invoke-RestMethod, committed in U:\mansion)
+
+**Concrete conclusion**
+1. **Port default change:** Changed default port from `4318` to `3001` in `src/index.js` (CLI entrypoint) and updated all documentation references in `README.md`.
+2. **Health Endpoints:** Added `GET /health` and `GET /api/health` endpoints returning JSON `{ status: 'ok', mansion: 'ready' }` in `src/host/server.js`.
+3. **Tests updated:** Added health endpoint routing assertions in `test/host.test.js`. Verified all 47 tests pass.
+4. **Execution:** Stood up the local Mansion Host server on the background task (`npm start` on port 3001). Probed endpoints using `Invoke-RestMethod` and confirmed they respond successfully.
+5. **Committed:** Committed changes in `U:\mansion` as commit `5364316`.
+
+**Verify (next agent / operator)**
+```powershell
+# Probe the health endpoint on port 3001
+Invoke-RestMethod -Uri http://127.0.0.1:3001/api/health
+# Response must be: @{status=ok; mansion=ready}
+
+# Check git commit in U:\mansion
+cd U:\mansion
+git show --stat 5364316
+```
+
+### claude — 2026-07-17 21:15 UTC — Verify autoscroll fix actually reaches the operator (completed — fix served correctly but INEFFECTIVE in a real browser)
+
+**State:** `completed` (verification-only; no product files touched; live server untouched; claim released)
+
+**Concrete conclusion**
+1. **Serving is NOT the problem.** The live Conclave server (node PID 532, `127.0.0.1:4317`) serves `app.js` **byte-identical** to repo HEAD: SHA256 `ECA26683E01316D8C45C7100211B8C1F8320D73EEB59F2D871F57AE9765282C3` for both served response and `public/app.js`. `git diff HEAD -- public/app.js` is empty; last commit touching it is `e811054` (the fix). `serveStatic` does `readFile` per request, so no restart was needed even though the process predates the commit. **No restart performed; none required.**
+2. **The fix itself is bad — reproduced in a real browser (Chromium via Playwright), per the dispatching message's own criterion.** Against a scratch Conclave instance (port 4999, temp store, same `public/` dir — byte-identical to what 4317 serves) with real messages through the real POST `/api/messages` → SSE → `refresh()` pipeline:
+   - Baseline autoscroll with no selection: **PASS** (feed follows new messages).
+   - Text selected in `#feed` (real mouse drag), new message arrives: **FAIL** — view jumped to bottom (`scrollTop 1164 → 1282`, `atBottom=true`) **and the selection was destroyed** (collapsed, empty).
+   - After deselect, autoscroll resumes: PASS.
+3. **Root cause (proven, not inferred):** `renderFeed()` (`public/app.js:206-208`) rebuilds `#feed.innerHTML` on every refresh, and `render()` runs **before** `scrollFeed()` inside `refresh()` (`public/app.js:90-96`). A MutationObserver sampling `window.getSelection()` synchronously at the child-replacement mutation showed `isCollapsed=true, text=''` at that instant — i.e., the DOM swap collapses the selection **before** the `e811054` guard (`public/app.js:101-106`) ever runs, so the guard is unreachable on the message-arrival path. The 238 unit tests pass because they don't model real-DOM selection collapse.
+4. Even if the scroll held, copying would still fail: the innerHTML wipe removes the selection highlight itself. The operator's copy-paste pain is the re-render, not (only) the scroll.
+
+**Evidence artifacts** (temp, outside repo): `C:\Users\Robotics\AppData\Local\Temp\conclave-autoscroll-verify\` — `launch.mjs` (scratch server), `test_autoscroll.py` (3-check repro), `diagnose_rootcause.py` (MutationObserver probe), `before_arrival.png` / `after_arrival.png`.
+
+**Open items / recommended follow-up (needs a new dispatched bugfix task naming `public/app.js` per FREEZE.md reopen-with-scope)**
+1. Capture selection state at the **top of `refresh()`** (before `render()`), not inside `scrollFeed()`.
+2. To actually fix copying: skip the `#feed` re-render (or render append-only) while a non-collapsed selection is inside `#feed` — preserving the selection is the real goal; holding scroll alone is not enough.
+3. Add a real-browser regression test (Conclave has none for this; Mansion's `test:browser` pattern is the template).
+
+**Verify (next agent / operator)**
+```powershell
+# served-vs-repo (live server):
+$r = Invoke-WebRequest http://127.0.0.1:4317/app.js -UseBasicParsing
+$ms = New-Object System.IO.MemoryStream(,[Text.Encoding]::UTF8.GetBytes($r.Content))
+(Get-FileHash -InputStream $ms -Algorithm SHA256).Hash
+(Get-FileHash U:\coding_conclave\public\app.js -Algorithm SHA256).Hash   # must match
+# browser repro (starts its own scratch server on :4999):
+node "$env:TEMP\conclave-autoscroll-verify\launch.mjs"   # background
+python "$env:TEMP\conclave-autoscroll-verify\test_autoscroll.py"
+```
 
 ### gemini — 2026-07-17 20:38 UTC — Build Living Room UI frontend foundation (completed)
 

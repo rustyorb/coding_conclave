@@ -34,6 +34,54 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 
 ## Handoffs (newest first)
 
+### claude — 2026-07-17 13:25 UTC — Cross-review charter × V1-LESSONS → BUILD-PLAN.md with first three milestones (completed)
+
+**Concrete conclusion**
+- Authored **`_projects/mansion/docs/BUILD-PLAN.md`**: the cross-review record plus milestones
+  M1–M3 with checkbox acceptance criteria. All **12 day-1 test names** from V1-LESSONS §4.5
+  are assigned (M1 = #9 #11, M2 = #1 #2 #3 #4 #8, M3 = #5 #6 #7 #10 #12).
+- **Cross-review findings (C1–C8), each with an adopted resolution:**
+  - **C1 (conflict):** charter §4.3 gates *reading* credentials while §4.2 default-allows all
+    in-root reads, and §4.5 only routes *write* paths through classification. Resolution:
+    classify every action incl. reads; in-root reads allow; redaction-before-persist (B17) is
+    the working enforcement; charter §4.5 "write path" should become "action path".
+  - **C2 (gap):** hard-gate approval scope unstated (B10 said "document explicitly in v2").
+    Resolution: approval authorizes task × gate-class; F2 re-pend/expire rules apply.
+  - **C3 (gap):** `gated` posture underspecified; the P0 "shell metachar refusal" test had
+    nothing to anchor to. Resolution: `gated` = same classifier, wider mapping; no allowlist
+    language in M1–M3; the testable invariant is the switch flip.
+  - **C4 (gap):** liveness/watchdog has no owner in charter §3. Resolution: eligibility is a
+    pure rule in Work; tick lives in the thin host; no-reanimation test in M3.
+  - **C5 (risk):** two scaffolds (`U:\mansion` + nested `_projects/mansion`) can fork.
+    Resolution: all milestone code lands in `U:\mansion`; `_projects/mansion` is docs-only
+    design record.
+  - **C6 (gap):** typed `permission-denied-headless` adapter failures (lessons §3.6) missing
+    from charter. Resolution: required in M3, day-1 test #12.
+  - **C7 (gap):** orphan adoption (B24) absent from charter. Resolution: lease records with
+    expired = free land in M2; adoption behavior deferred past M3, flagged not lost.
+  - **C8 (note):** vocabulary drift only (unleashed→breathe); glossary noted.
+- Charter §6 box 1 (operator accepts trusted-local) is still open → made an **M1 exit
+  criterion** (operator sign-off before M2 builds on the trust model).
+- Milestones pin charter-level invariants only, so Codex's kernel/outbox blueprint (under
+  Grok's adversarial review) may reshape internals without moving the acceptance bars.
+- No `src/` / `public/` / `test/` changes; freeze respected.
+
+**What changed**
+- `_projects/mansion/docs/BUILD-PLAN.md` (new; task path) — committed in the outer Conclave
+  repo and in the nested `_projects/mansion` repo (both track `docs/`).
+- `COORDINATION.md`: claim taken and released within the run; this handoff.
+
+**How to verify**
+- `Test-Path _projects/mansion/docs/BUILD-PLAN.md` → `True`
+- `Select-String -Path _projects/mansion/docs/BUILD-PLAN.md -Pattern 'day-1 #' | Measure-Object` → Count **12**
+- `git show HEAD --stat` → `BUILD-PLAN.md` + `COORDINATION.md` only
+- `git -C _projects/mansion log --oneline -1` → build-plan commit; `git -C _projects/mansion status` → clean
+
+**Open items**
+- Mirror `BUILD-PLAN.md` (and `CHARTER.md`) into `U:\mansion\docs\` on a mansion-scoped run.
+- Charter amendment when next touched: §4.5 "write path" → "action path" (C1).
+- Operator: tick charter §6 box 1 (accept/amend trusted-local) — it gates M1 exit.
+
 ### grok — 2026-07-17 13:40 UTC — Wire local SearXNG research client (completed)
 
 **Concrete conclusion**

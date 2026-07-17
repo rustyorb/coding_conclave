@@ -17,6 +17,23 @@ Protocol: see [AGENTS.md](AGENTS.md).
 
 ## Handoffs (newest first)
 
+### claude — 2026-07-17 03:18 UTC — AGENTS.md swap BLOCKED: operator's protocol paste was truncated at intake; backup file removed
+
+**Concrete conclusion**
+- The new "Conclave Agent Operating Protocol" **cannot be landed verbatim**: the operator's chat paste (msg_71621c64…, seq 24158, 2026-07-17T03:08:54Z) was clamped to 12,000 chars at intake by `src/server.js:1562` (`clampText`, `src/lib/utils.js:13`) **before persistence**. The stored copy ends mid-word at "1. Run `git s" inside "## Finishing a run"; every other copy in `.conclave/state.json` (execution purposes, task source) derives from the same clamped message. The full text never reached disk.
+- What survives verbatim: the lead-in plus the first 11,682 protocol chars — 14 section headers through "## Finishing a run" step 1. What's lost (per the operator's intact compressed encoding, msgs 02:56/02:59Z): the rest of the Finishing-a-run steps, an Idle section, and a Safety section (`Never[reset, checkout, clean, force-push…]`, no creds/secrets).
+- Grok's decompression (executions[9].output) exists but is a reconstruction; per the task's explicit instruction ("stop and ask the operator to re-paste rather than reconstructing") it was **not** used. AGENTS.md was **not** modified.
+- `AGENTS_ORIGINAL_BACKUP.md` deleted — verified byte-identical (`cmp`) to both disk `AGENTS.md` and `HEAD:AGENTS.md`, so zero information loss; the old protocol remains tracked in git. `git status` is now clean: no untracked AGENTS artifacts.
+- Reference check: README.md has no link to AGENTS.md (its only "AGENTS" is a mermaid node label); project CLAUDE.md links to AGENTS.md + COORDINATION.md, both present — nothing to fix.
+
+**How to verify**
+- `git status --short` → clean (no `AGENTS_ORIGINAL_BACKUP.md`).
+- `node -e "const s=require('./.conclave/state.json'); const m=s.messages.find(m=>m.id.startsWith('msg_71621c64')); console.log(m.content.length, JSON.stringify(m.content.slice(-30)))"` → `12013 "…git s\n…[truncated]"`.
+- `cmp <(git show HEAD:AGENTS.md) AGENTS.md` → identical (old protocol still in history).
+
+**Open items**
+- **Operator action required:** re-paste the full pre-compression protocol. Note the 12,000-char chat intake cap — split it across two chat messages, or write it straight to `AGENTS.md` and let an agent commit it. Once the full text exists, the remaining scope is: replace AGENTS.md, commit, push.
+
 ### codex — 2026-07-16 23:13 UTC — Conversational queue latency fixed with ordered output batching and retry fairness
 
 **Concrete conclusion**

@@ -17,6 +17,28 @@ Protocol: see [AGENTS.md](AGENTS.md).
 
 ## Handoffs (newest first)
 
+### gemini — 2026-07-17 12:58 UTC — Write local-first mansion charter → staging/mansion/CHARTER.md (completed)
+
+**Concrete conclusion**
+- Authored the v2 product/architecture charter for the Sibling Mansion project at **`staging/mansion/CHARTER.md`**.
+- **Core Principles & Design Postures:** Codified local-first, trust the perimeter, room for activities, breathe (default-allow), and port deliberately.
+- **Goals & Non-goals:** Outlined clean modular domain contexts, smooth agent autonomy, and database-backed coordination, while setting non-goals (no SaaS multi-tenant features, no legacy code copy, no global system mutations).
+- **Local-Trust & Capability Model:** Defined the default-allow posture within the workspace directory, paired with hard gates for destructive/external actions (data deletion, force-pushing, credentials exposure) and full audit observability.
+- **Architectural Boundary:** Established the explicit "No More Coding into Conclave v1" rule, designating the v1 codebase as a frozen behavioral museum.
+- **Operator Sign-off:** Included an acceptance/amendments sign-off block for the operator to approve or customize the principles.
+
+**What changed**
+- `staging/mansion/CHARTER.md` (new)
+- `COORDINATION.md`: claim released; this handoff.
+
+**How to verify**
+- `Test-Path staging/mansion/CHARTER.md` → `True`
+- Check file contents to verify goals, non-goals, local-trust model, capability model, and freeze boundary are clearly present.
+- `git status` → clean (once committed and pushed)
+
+**Open items**
+- Proceed with the sibling project scaffolding and boundary definitions tasks using this charter and Grok's reference lessons as design blueprints.
+
 ### grok — 2026-07-17 12:56 UTC — Extract Conclave reference lessons → staging/mansion/REFERENCE.md (completed)
 
 **Concrete conclusion**

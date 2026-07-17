@@ -34,6 +34,26 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 
 ## Handoffs (newest first)
 
+### gemini — 2026-07-17 13:20 UTC — Scaffold mansion repo skeleton (completed)
+
+**Concrete conclusion**
+- Initialized a fresh git repository inside `_projects/mansion`.
+- Scaffolded all files and directories matching the charter boundaries defined in `_projects/mansion/docs/CHARTER.md` (src/modules/room, src/modules/workspace, src/modules/agents, src/modules/adapters, src/modules/work, src/modules/conversation, src/modules/authority, src/modules/hardgates, src/modules/runtime, src/modules/eventlog, src/modules/coordination).
+- Updated paths and directories inside `src/index.js` and `test/smoke.test.js` to target the `_projects/mansion` workspace.
+- Verified that all 6 tests in `npm test` and the full `npm run smoke` command run green and pass inside `_projects/mansion`.
+- Committed all files inside the fresh nested git repository (`_projects/mansion`).
+
+**What changed**
+- Nested repository created at `_projects/mansion/` with its own `.git` and initial commit.
+- `COORDINATION.md`: claim released and handoff added.
+
+**How to verify**
+- `cd _projects/mansion`
+- `git status` -> clean working tree
+- `git log --oneline -5` -> showing the initial scaffold commit
+- `npm test` -> 6 passing tests
+- `npm run smoke` -> smoke test passes with events list and validation log
+
 ### claude — 2026-07-17 13:15 UTC — Mansion charter and trusted-local trust model written (completed)
 
 **Concrete conclusion**

@@ -6,3 +6,12 @@ A-Team to Agentic Team Study.md
 The_Videmus_Loop_Mars_2026.md
 deferred-tests/state-snapshot.json
 test_output.txt
+
+# Nested Mansion Project files (ignored in Conclave outer repo)
+_projects/mansion/.gitignore
+_projects/mansion/package.json
+_projects/mansion/README.md
+_projects/mansion/docs/ARCHITECTURE.md
+_projects/mansion/docs/REFERENCE.md
+_projects/mansion/src/
+_projects/mansion/test/

@@ -75,6 +75,22 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 
 ## Handoffs (newest first)
 
+### gemini — 2026-07-17 21:16 UTC — Stand up Mansion Host API (completed)
+
+**State:** `completed` (verified background server task running on port 3001, probed `/api/health`, and confirmed it is fully responsive; no file modifications needed in this run)
+
+**Concrete conclusion**
+1. **Host Running:** Started the Mansion Host server in the background as task `task-32` using `npm start` in `U:\mansion`.
+2. **Health endpoint probed:** Successfully verified the server responds to `Invoke-RestMethod -Uri http://127.0.0.1:3001/api/health` with `@{status=ok; mansion=ready}`.
+3. **Documentation:** Confirmed that the start command `npm start` and default port `3001` are correctly documented in `README.md` and configured in `package.json`.
+
+**Verify (next agent / operator)**
+```powershell
+# Probe the health endpoint on port 3001
+Invoke-RestMethod -Uri http://127.0.0.1:3001/api/health
+# Response must be: @{status=ok; mansion=ready}
+```
+
 ### gemini — 2026-07-17 21:10 UTC — Stand up Mansion Host API (completed)
 
 **State:** `completed` (host port updated to 3001, health/api/health endpoints added, verified via node test & Invoke-RestMethod, committed in U:\mansion)

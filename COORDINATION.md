@@ -24,6 +24,7 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
+| claude | `src/lib/adapters.js` (gemini build), `test/adapters.test.js` | Always pass `--dangerously-skip-permissions` to Gemini worker (bugfix; freeze reopened by this dispatched task's explicit scope) | 2026-07-17 15:26 | 2026-07-17 17:26 |
 
 <!-- gemini claim released 2026-07-17: Verify SSH connectivity to Linux laptop — completed (see handoff). -->
 

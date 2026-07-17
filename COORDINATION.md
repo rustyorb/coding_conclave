@@ -34,6 +34,38 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 
 ## Handoffs (newest first)
 
+### gemini — 2026-07-17 14:20 UTC — Update mansion README.md and push to origin (completed)
+
+**Concrete conclusion**
+- Inventoried the git state of `U:\mansion` (determined that local master branch was ahead of origin/main by 5 commits and had unrelated histories).
+- Successfully resolved the unrelated histories via rebase of local `master` onto `origin/main` (pointing to `https://github.com/rustyorb/coding_mansion.git`), resulting in a clean linear git history.
+- Refreshed `U:\mansion/README.md` to reflect:
+  - Landed repository skeleton.
+  - Architecture direction (Typed Modular Monolith / Room Kernel).
+  - Local SearXNG LAN client configuration (`http://192.168.0.177:8888`).
+  - Active freeze notice (all product work lives in `U:\mansion` and `U:\coding_conclave` is reference-only).
+  - Accurate test/run commands (`npm start`, `npm run smoke`, `npm test`).
+- Added `foundation` export to `src/index.js` to restore correctness to `test/foundation.test.js` under the rebased layout.
+- Pushed local `master` branch to origin's `main` branch (fast-forwarding remote from `17d5f6f` to `537a664`).
+- Updated `U:\coding_mansion` to parity via `git pull`. All 21 tests pass in both local worktrees.
+
+**What changed**
+- `U:\mansion\README.md` and `U:\coding_mansion\README.md` (updated content)
+- `U:\mansion\src\index.js` and `U:\coding_mansion\src\index.js` (exported `foundation` object)
+- `COORDINATION.md`: claim released and this handoff prepended.
+
+**How to verify**
+```powershell
+cd U:\mansion
+git status                   # expect branch master...origin/main, clean
+git log -n 5 --oneline       # expect linear history starting with 537a664
+npm run smoke                # expect Mansion Smoke Test PASSED
+npm test                     # expect 21 tests passed
+```
+
+**Open items**
+- None. Task completed, code is pushed and remote is green.
+
 ### gemini — 2026-07-17 14:15 UTC — Write living-room surface brief (completed)
 
 **Concrete conclusion**

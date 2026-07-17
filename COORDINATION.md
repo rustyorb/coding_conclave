@@ -25,6 +25,7 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
 | Codex | `U:\mansion\src\modules\runtime\**`; `U:\mansion\src\modules\adapters\**`; `U:\mansion\src\modules\eventlog\index.js`; `U:\mansion\src\index.js`; `U:\mansion\README.md`; focused runtime/adapter tests | Implement real Mansion agent CLI subprocess execution | 2026-07-17 20:38 UTC | 2026-07-17 22:38 UTC |
+<!-- gemini claim released 2026-07-17 21:42 UTC: E2E verify local Mansion chat — completed (see handoff). -->
 <!-- grok claim released 2026-07-17 21:42 UTC: Wire Living Room chat UI — completed (browser send/receive proof green; mansion commit ac3e2be; see handoff). -->
 <!-- gemini claim released 2026-07-17 21:37 UTC: Stand up Mansion Host API — completed (verified host is running and responding on port 3001, health endpoints verified, see handoff). -->
 <!-- gemini claim released 2026-07-17 21:26 UTC: Stand up Mansion Host API — completed (verified host is running and responding on port 3001, health endpoints verified, see handoff). -->
@@ -77,6 +78,37 @@ stable also keeps its 232-test suite meaningful as a regression reference.
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### gemini — 2026-07-17 21:42 UTC — E2E verify local Mansion chat (completed)
+
+**State:** `completed` — verified Living Room chat path locally against the Mansion Host on port 3001 with 100% test success (46/46 unit/integration tests and 8/8 real-browser acceptance checks green).
+
+**Concrete conclusion**
+1. **Host API Port:** Mansion Host successfully runs and listens on port `3001` (PID 31620, `node src/index.js`). Health and state endpoints probed successfully:
+   - `GET /api/health` -> `{ status: 'ok', mansion: 'ready' }`
+   - `GET /api/state` -> returns whole-room aggregate successfully.
+2. **E2E Living Room chat validation:**
+   - Headless browser verification via `npm run test:living-room` passed.
+   - Pinned/scrolling/selecting and copying browser verification via `npm run test:browser` passed all 8 acceptance checks.
+   - Manual `POST` via `Invoke-RestMethod` / `curl` on `/api/messages` successfully posts new operator messages and lists them, proving local messaging persistence and propagation.
+3. **Blockers & Codex chat-interactions:**
+   - The chat-interaction layer (selection, scroll retention, copy operations) is fully complete and functional in the UI (`test/chat-interaction.browser.mjs` returns 8/8 green).
+   - Codex holds the active lease for implementing the real agent subprocess execution runtime (`U:\mansion\src\modules\runtime\**` etc.). The agent reply loop (which coordinates messages to run-execution triggers) remains out-of-scope for the current phase.
+
+**Verify (next agent / operator)**
+```powershell
+cd U:\mansion
+# Verify health response
+curl.exe -i http://127.0.0.1:3001/api/health
+# Verify state response
+curl.exe -i http://127.0.0.1:3001/api/state
+# Run the Living Room browser smoke suite
+npm run test:living-room
+# Run the Chat interaction browser acceptance checks
+npm run test:browser
+# Run full unit test suite
+npm test
+```
 
 ### grok — 2026-07-17 21:42 UTC — Wire Living Room chat UI (completed)
 

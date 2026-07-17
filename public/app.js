@@ -3,6 +3,7 @@ import { esc, renderMarkdown } from './markdown.js';
 import { chatFeedMessages } from './chat-feed.js';
 import { agentIdentity, avatarMarkup, taglineMarkup } from './avatar-cards.js';
 import { capabilityBadges } from './capability-badges.js';
+import { heartbeatMarkup, lastActivityByAgent } from './agent-heartbeat.js';
 import { createRecipientSelection } from './recipient-selection.js';
 
 const $ = (selector) => document.querySelector(selector);
@@ -143,6 +144,7 @@ function agentRoleBadges(agent) {
 }
 
 function renderAgents() {
+  const heartbeat = lastActivityByAgent(state);
   $('#agentList').innerHTML = state.agents.map((agent) => {
     const identity = agentIdentity(agent, state.identities);
     return `
@@ -155,6 +157,7 @@ function renderAgents() {
       ${taglineMarkup(identity)}
       ${agentRoleBadges(agent)}
       ${capabilityBadges(agent)}
+      ${heartbeatMarkup(agent, heartbeat)}
       <div class="agent-action-row">
         <div class="agent-action">${esc(agent.lastAction)}</div>
         <button class="agent-assign" data-assign-agent="${esc(agent.id)}" ${agent.status !== 'installed' ? 'disabled' : ''}>Assign task</button>
@@ -1199,4 +1202,4 @@ events.onmessage = () => eventRefresh.schedule();
 events.onerror = () => toast('Live event stream reconnecting…', true);
 
 refresh({ keepScroll: false }).catch((error) => toast(error.message, true));
-setInterval(() => { if (state && currentRoute() === 'chat') renderFeed(); }, 30_000);
+setInterval(() => { if (state && currentRoute() === 'chat') { renderFeed(); renderAgents(); } }, 30_000);

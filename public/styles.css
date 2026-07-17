@@ -82,6 +82,17 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .cap-badge.failed { color: var(--red); border-color: rgba(255,109,122,.35); background: rgba(255,109,122,.07); }
 .cap-badge.unsupported { color: rgba(143,138,165,.55); border-style: dashed; text-decoration: line-through; }
 
+.agent-heartbeat { display: flex; align-items: center; gap: 6px; margin: 7px 0 0 47px; font-size: 10px; color: var(--muted); cursor: help; }
+.agent-heartbeat .hb-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: 0 0 auto; }
+.agent-heartbeat.running { color: var(--cyan); }
+.agent-heartbeat.running .hb-dot { background: var(--cyan); box-shadow: 0 0 8px rgba(109,216,199,.55); animation: hb-pulse 1.6s ease-in-out infinite; }
+.agent-heartbeat.idle .hb-dot { background: var(--cyan); opacity: .6; }
+.agent-heartbeat.stale { color: var(--amber); }
+.agent-heartbeat.stale .hb-dot { background: var(--amber); box-shadow: 0 0 6px rgba(247,188,102,.4); }
+.agent-heartbeat.none { color: rgba(143,138,165,.55); }
+.agent-heartbeat.none .hb-dot { background: transparent; border: 1px dashed rgba(143,138,165,.55); }
+@keyframes hb-pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(.72); opacity: .55; } }
+
 .roles-grid { display: flex; flex-direction: column; gap: 12px; margin-bottom: 6px; max-height: 44vh; overflow-y: auto; }
 .roles-row strong { display: block; font-size: 12px; margin-bottom: 6px; }
 .roles-options { display: flex; flex-wrap: wrap; gap: 8px 12px; }

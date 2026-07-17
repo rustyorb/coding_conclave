@@ -5,9 +5,9 @@ Protocol: see [AGENTS.md](AGENTS.md).
 
 ## Active claims
 
-| Agent | Files / area | Task | Claimed at (UTC) |
-|-------|--------------|------|------------------|
-| codex | Integrated memory slice: `src/lib/{memory-db,memory-ledger,context-assembler,room-summary,adversarial-memory-eval,backup-adapter}.js`, memory paths in `src/server.js`, memory UI/docs/tests/fixtures | Release-gate review and scoped hardening across architecture, security/privacy, migrations, recovery, and UI honesty | 2026-07-15 23:07:17 |
+| Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
+|-------|--------------|------|------------------|--------------------|
+| codex | Integrated memory slice: `src/lib/{memory-db,memory-ledger,context-assembler,room-summary,adversarial-memory-eval,backup-adapter}.js`, memory paths in `src/server.js`, memory UI/docs/tests/fixtures | Release-gate review and scoped hardening across architecture, security/privacy, migrations, recovery, and UI honesty | 2026-07-15 23:07:17 | expired (adoptable) |
 
 
 <!-- claude-gemini-grok claim released 2026-07-14 by Claude (Fable 5, operator-side): the Grok
@@ -16,6 +16,32 @@ Protocol: see [AGENTS.md](AGENTS.md).
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### claude — 2026-07-17 10:10 UTC — Per-agent heartbeat UI landed (took over from Gemini); failed card 8b061edd parked (completed)
+
+**Concrete conclusion**
+- Gemini's failed card `task_8b061edd` ("Show per-agent heartbeat in the room UI", 5/5 retries exhausted) is **parked**: archived via live API (`POST /api/tasks/task_8b061edd…/archive` → 200; archive route accepts `failed`, `src/server.js:1887`). Verified fossil-safe: status `failed` + `archivedAt: 2026-07-17T09:58:55Z`, and `listEligibleIdleWork` on live state returns it in neither `ready` nor `requeueable` — the watchdog cannot requeue it and auto-retry only fires at execution-finish, so it is doubly terminal.
+- The card's spec is now implemented, fully client-side from data already on `/api/state` (no routes touched — Codex's server claim undisturbed): each agent card in the participants rail shows a heartbeat row with a status dot + text, computed as the newest per-agent signal across `messages[].source`, `chatTurns[].agentId` (`updatedAt`), and `executions[].agentId` (`finishedAt ?? startedAt`). Levels: `running` (pulsing cyan "working now"), `idle` (cyan, "last active 4m ago"), `stale` (amber, "stale · idle 25m" once idle > 15m — mirrors the idle watchdog default), `none` (dimmed "no recorded activity" — never invents a timestamp). Tooltip carries the exact last-signal UTC ISO, signal kind, and the threshold. Idle durations keep ticking via the existing 30s chat-page interval (now also re-renders the rail), so a stalled fleet becomes visible without any SSE event.
+- Live-state render check: codex/claude → `working now`, gemini/grok → `idle` with real last-activity timestamps. Live server already serves the new files from disk (static), so the UI is live on next browser reload — no restart dependency.
+
+**What changed**
+- `public/agent-heartbeat.js` (new, pure ESM like `capability-badges.js`): `lastActivityByAgent` (one pass, skips missing ids/unparsable timestamps), `heartbeatEntry`, `heartbeatMarkup` (whitelisted level classes, escaped tooltip), `formatIdleDuration` (s/m/h m/d h), `DEFAULT_STALE_MINUTES = 15`.
+- `public/app.js`: import; `renderAgents` computes the activity map once and injects `${heartbeatMarkup(agent, heartbeat)}` after capability badges; 30s interval also calls `renderAgents()`.
+- `public/styles.css`: `.agent-heartbeat` row + `.hb-dot` level variants (cyan running/idle, amber stale, dashed none) + `hb-pulse` keyframes, placed by the `.cap-badge` block.
+- `public/index.html`: rail-footer legend sentence explaining the 15-minute stale threshold.
+- `test/agent-heartbeat.test.js` (new, 8 tests): newest-signal selection across all three streams, hostile/missing timestamp skipping, running-overrides-stale, idle text/title, stale boundary semantics (`>` threshold), honest none state, duration formatting, class whitelisting + tooltip escaping.
+
+**How to verify**
+- `node --test test/agent-heartbeat.test.js` → 8/8 pass.
+- `npm test` → **227/227 pass** (was 219; +8 new).
+- `node --check public/agent-heartbeat.js public/app.js` → pass.
+- Live: `GET http://127.0.0.1:4317/agent-heartbeat.js` → 200 `text/javascript`; open the app chat page — each participant card shows the heartbeat row under the capability badges; hover for the exact timestamp.
+- Card parked: `(iwr http://127.0.0.1:4317/api/state | ConvertFrom-Json).tasks | ? { $_.id -like 'task_8b061edd*' }` → status `failed`, `archivedAt` set.
+
+**Open items**
+- The 15m stale threshold is a client-side constant; if the operator tunes `CONCLAVE_IDLE_INTERVAL_MS`, the UI legend/threshold does not follow it (state does not project the interval). Follow-on if wanted.
+- No browser click-through claimed (no in-app browser tab in this room — same constraint as prior UI handoffs); verification is unit tests + live-state render probe + served-asset checks.
+- Codex's restart card (`Run safe restart once the runway is clear`, depends on this task) is now unblocked from this side.
 
 ### claude — 2026-07-17 10:15 UTC — Fossil quarantine verified intact post-restart: 0 fossils eligible, all 7 watchdog requeues were live chain work (completed)
 

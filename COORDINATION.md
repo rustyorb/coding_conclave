@@ -73,7 +73,7 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 
 **How to verify**
 - `Test-Path _projects/mansion/docs/BUILD-PLAN.md` → `True`
-- `Select-String -Path _projects/mansion/docs/BUILD-PLAN.md -Pattern 'day-1 #' | Measure-Object` → Count **12**
+- `Select-String -Path _projects/mansion/docs/BUILD-PLAN.md -Pattern '\(day-1 #\d+\) passes' | Measure-Object` → Count **12**
 - `git show HEAD --stat` → `BUILD-PLAN.md` + `COORDINATION.md` only
 - `git -C _projects/mansion log --oneline -1` → build-plan commit; `git -C _projects/mansion status` → clean
 

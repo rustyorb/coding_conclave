@@ -237,6 +237,6 @@ testable through module APIs without it); anything multi-tenant.
 # From U:\coding_conclave
 Test-Path _projects/mansion/docs/BUILD-PLAN.md
 Select-String -Path _projects/mansion/docs/BUILD-PLAN.md -Pattern 'C1|Milestone 1|day-1 #9|switch-flip|permission-denied-headless'
-# All 12 day-1 test names from V1-LESSONS §4.5 appear exactly once each in §2:
-Select-String -Path _projects/mansion/docs/BUILD-PLAN.md -Pattern 'day-1 #' | Measure-Object
+# All 12 day-1 test names from V1-LESSONS §4.5 appear exactly once each in §2 (expect Count 12):
+Select-String -Path _projects/mansion/docs/BUILD-PLAN.md -Pattern '\(day-1 #\d+\) passes' | Measure-Object
 ```

@@ -7,7 +7,7 @@ Protocol: see [AGENTS.md](AGENTS.md).
 
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
-| codex | Integrated memory slice: `src/lib/{memory-db,memory-ledger,context-assembler,room-summary,adversarial-memory-eval,backup-adapter}.js`, memory paths in `src/server.js`, memory UI/docs/tests/fixtures | Release-gate review and scoped hardening across architecture, security/privacy, migrations, recovery, and UI honesty | 2026-07-15 23:07:17 | expired (adoptable) |
+| — | — | (none live) | — | — |
 
 
 <!-- claude-gemini-grok claim released 2026-07-14 by Claude (Fable 5, operator-side): the Grok
@@ -16,6 +16,28 @@ Protocol: see [AGENTS.md](AGENTS.md).
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### grok — 2026-07-17 10:15 UTC — Heartbeat live only after clean backlog: gates pass, silent success tick proven (completed)
+
+**Concrete conclusion**
+- **Task 0 gate (fossils):** PASS. Live + disk agree: blocked **0**, waiting **0**, rejected **75** (of which **73** archived fossils from the 2026-07-16 quarantine), requeueable restart-blocked **0**. `listEligibleIdleWork` returns **0** rejected/archived among eligible. Named REQUEUE cards from triage already completed historically — not re-touched.
+- **Task 1 gate (preflight silence/eligibility):** PASS (card `task_c446288b` already completed; re-verified this run). Success ticks with `{acted:false}` post **nothing** to room chat and write **no** `idle-watchdog.fired` audit (`src/lib/idle-watchdog.js:97-101`, `src/server.js:418`). Reasons: `not-idle` | `no-eligible-work` | `paused`. Chat spam only when `acted:true` (recoverable requeue and/or ready nudge). Fossils cannot be selected: eligibility is `status==='ready'` or `status==='blocked'` + restart blocker + deps/auth (`idle-watchdog.js:57-72`).
+- **Enable heartbeat:** Already live on room server PID **24776** (`node src/server.js`, port **4317**). `initialize()` → `startIdleWatchdog()` when `CONCLAVE_IDLE_INTERVAL_MS` / check > 0 (`server.js:388-399`). Defaults: interval **15m**, check **60s**. `room.lastIdleWatchdogAt = 2026-07-17T09:51:22.994Z`; one historical autopilot “Idle watchdog… Re-queued 7…” message (live chain work only — **zero fossils**). **No code flip required**; enabling was not blocked on missing implementation. Did **not** restart (mid-flight writers; open-mode restart remains Codex gate).
+- **One real silent success tick:** (1) Isolated `ConclaveApp.tickIdleWatchdog()` on a no-eligible board → `{acted:false, reason:'no-eligible-work'}`, 0 idle messages, 0 audits. (2) Live observe **≥65s** (one default check window): messages **1861→1861**, idle-watchdog chat **1→1**, `lastIdleWatchdogAt` unchanged, ready set unchanged, **75/75** rejected still rejected, **0** fossils as ready, **NEW_IDLE_WATCHDOG_CHAT_SPAM=0**. Board idle ~2.8m (not idle at 15m default) so quiet ticks are `not-idle` silence.
+
+**What changed**
+- `COORDINATION.md` only (this handoff). No `src/`, `test/`, board mutations, or server restart.
+
+**How to verify**
+- Counts: `(iwr http://127.0.0.1:4317/api/state | ConvertFrom-Json).tasks | Group-Object status` → blocked 0, waiting 0, rejected 75.
+- Eligibility: `node --input-type=module -e "import {listEligibleIdleWork} from './src/lib/idle-watchdog.js'; import {readFileSync} from 'fs'; const s=JSON.parse(readFileSync('./.conclave/state.json','utf8')); const {ready,requeueable}=listEligibleIdleWork(s); console.log(ready.length, requeueable.length, [...ready,...requeueable].filter(t=>t.status==='rejected'||t.archivedAt).length)"` → `N 0 0`.
+- Silent no-op: `node --test test/idle-watchdog.test.js` → **10/10** (includes empty-board silence + no double-fire).
+- Live silence: re-sample `/api/state` across >60s while board has recent task activity — idle-watchdog message count and `lastIdleWatchdogAt` must not advance without a true idle+eligible fire.
+
+**Open items**
+- Open-mode restart for Codex DELETE route still deferred until no mid-write (`start-open.cmd`). Heartbeat does not require that restart.
+- Stale ready chain cards still on board (`task_7019ff5b` verify quarantine, `task_449a9d8f` Gemini recovery, `task_9184ba95` deletion gates, operator `task_8c331979`) — legitimate ready work, not fossils; watchdog may **nudge-drain** them after a full idle interval (that is intentional wake, not success spam).
+- Orphan node `server.js` PID **27140** (started 2026-07-16) is **not** bound to 4317; optional cleanup by operator — do not kill blindly if unsure.
 
 ### codex — 2026-07-17 10:10 UTC — Fossil quarantine task reconciled without replay: 73 terminal, exactly 3 named REQUEUE cards (completed)
 

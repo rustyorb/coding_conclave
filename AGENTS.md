@@ -1,34 +1,44 @@
-# Agent Coordination Protocol
+# Conclave Agent Operating Protocol
 
-This workspace is shared by multiple coding agents (Claude, Codex, Gemini) run by the
-Conclave app in this repo. Every agent run MUST follow this protocol.
+Shared multi-agent workspace. This file is injection tax — keep it tight. Follow every run.
 
-## Before doing anything
+## Start of run
 
-1. Read `COORDINATION.md`. It lists which files other agents have claimed and the most
-   recent handoffs.
-2. Run `git status` and `git log --oneline -5`. Uncommitted changes you did not make
-   belong to another agent — do not modify, revert, or commit those files.
+1. Read `COORDINATION.md` (claims + newest handoffs).
+2. `git status` and `git log --oneline -5`. Never destroy others' work: no `reset --hard`, `checkout --`, `clean`, or force-push.
+3. **Claim before edit:** Active claims row — agent, paths, task, `Claimed at` (UTC), **lease expiry** (default +2h).
 
-## While working
+## Leases (not locks)
 
-- Claim your work: add a row to the **Active claims** table in `COORDINATION.md` with
-  your agent id, the files you will touch, and your task, before editing them.
-- Stay off files claimed by another agent. If your task requires a claimed file, stop
-  and report the conflict in your handoff instead of editing it.
-- Never run destructive git commands (`reset --hard`, `checkout --`, `clean`, force
-  push). Another agent's in-progress work may be in the tree.
+- Claims are **time-bounded**. Expired leases are free.
+- Stay off paths under a **live** foreign lease. Conflict → stop and hand off.
+- **Adopt** orphans: expired leases, unclaimed dirty trees matching your task, unfinished handoffs naming your task. Re-claim with a fresh lease, then continue.
+- One task per run; do not expand into another agent's live lease.
 
-## When finishing
+## Heartbeat (liveness)
 
-1. Remove your row from **Active claims**.
-2. Add an entry at the top of **Handoffs** in `COORDINATION.md`: what changed, which
-   files, how to verify (exact commands), and anything left open.
-3. End your reply with the same handoff so the operator and the next agent see it in
-   the room feed.
+Emit progress while working. Terminal states must be explicit:
 
-## Ground rules
+| Signal | Meaning |
+|--------|---------|
+| **progress** | Alive, still on the lease |
+| **blocked** | Stuck; name blocker + unblock |
+| **failed** | Could not complete; evidence + next step |
+| **completed** | Done; include verify commands |
 
-- One task per run; do not expand scope into another agent's task.
-- Validate with `npm test` before reporting done when you touched `src/` or `test/`.
-- Report only what actually happened.
+**Silence under an active lease = failed liveness.** Stale leases expire and may be reassigned.
+
+## Ship coherent work
+
+- Local edits ≠ done. Coherent verified units get a **commit**.
+- When shipping: **push** and verify remote (tracks origin; clean; no surprise unpushed commits).
+- Touched `src/` or `test/` → `npm test` (or the task's scoped suite) before done.
+- Report only what happened. Never expose secrets.
+
+## Finish / handoff
+
+1. Remove your claim (or mark lease released).
+2. Prepend **Handoff** in `COORDINATION.md`: changes, files, exact verify commands, open items, state (`completed` / `blocked` / `failed`).
+3. End the chat reply with the same handoff.
+
+Handoffs must be **actionable** — next agent verifies and continues without rediscovery.

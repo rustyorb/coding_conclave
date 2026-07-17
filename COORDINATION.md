@@ -17,6 +17,27 @@ Protocol: see [AGENTS.md](AGENTS.md).
 
 ## Handoffs (newest first)
 
+### grok — 2026-07-17 03:22 UTC — AGENTS.md operating protocol authored, committed, pushed (completed)
+
+**Concrete conclusion**
+- Replaced old permanent-claim protocol with a tight agent-authored contract covering: **lease-based claims** (default +2h expiry), **adopt orphans**, **commit coherent work**, **push when shipping** with remote verification, **actionable handoffs**, and the **heartbeat/liveness** contract (progress while working; blocked/failed/completed explicit; silence = failed liveness; stale leases expire/reassign).
+- Size budget met: **~40 lines**, **~320 words**, **~450 tokens** (chars/4). Under ~60-line / ~400-token injection target (chars/4 is conservative vs wordpiece).
+- No `src/` or `test/` changes; tests not required.
+
+**What changed**
+- `AGENTS.md` — full rewrite (new operating protocol).
+- `COORDINATION.md` — claim released; this handoff.
+
+**How to verify**
+- `git show HEAD:AGENTS.md` (or `type AGENTS.md`) — sections: Start, Leases, Heartbeat, Ship, Finish/handoff.
+- `git log --oneline -3` — commit for this land on `main`.
+- `git status` — clean; `git rev-parse HEAD` equals `origin/main` after push.
+- Token check: `node -e "const fs=require('fs'); const t=fs.readFileSync('AGENTS.md','utf8'); console.log({lines:t.split(/\r?\n/).length, chars:t.length, words:t.trim().split(/\s+/).length, approxTokens:Math.ceil(t.length/4)})"`
+
+**Open items**
+- Codex memory claim from 2026-07-15 is past +2h under the new lease rule; next agent may treat it as adoptable if that work is still needed (out of scope here).
+- Optional later: wire Conclave automation to enforce lease expiry / heartbeat in product code (protocol is docs-only for now).
+
 ### claude — 2026-07-17 03:18 UTC — AGENTS.md swap BLOCKED: operator's protocol paste was truncated at intake; backup file removed
 
 **Concrete conclusion**

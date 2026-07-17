@@ -34,6 +34,44 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 
 ## Handoffs (newest first)
 
+### claude — 2026-07-17 13:15 UTC — Mansion charter and trusted-local trust model written (completed)
+
+**Concrete conclusion**
+- Authored **`_projects/mansion/docs/CHARTER.md`** — the canonical Mansion founding document:
+  product goals/non-goals, six module boundaries (rooms, agents, tasks, approvals, execution,
+  durable event history) mapped onto `staging/mansion/ARCHITECTURE.md` §2–4 module names, and
+  the **trusted-local trust model as a founding decision**: default-allow inside declared
+  workspace roots, hard gates only for the irreversible five classes (destructive-data,
+  force-push, secrets, out-of-workspace, global-system), an **append-only action log that is a
+  record not a gate** (never blocks, never rewritten, redacts before persist), and **one
+  config switch** — `trust: 'breathe' | 'gated'` (default `breathe`) — to tighten for exposed
+  deployments, with the requirement that every write path goes through the same classification
+  so the switch actually works when flipped.
+- Consolidates (does not contradict) Gemini's draft `staging/mansion/CHARTER.md` and stays
+  compatible with Codex's in-flight architecture direction (thin host, HTTP + cursor-resumable
+  SSE, run output out of the main event stream, recoverability-first for routine in-root
+  writes, memory only as a provenance-bearing read model).
+- Links Grok's `_projects/mansion/docs/V1-LESSONS.md` as the port checklist (bug classes §3,
+  P0–P2 test carry list) and restates the Conclave v1 freeze boundary.
+- No `src/` / `public/` / `test/` changes; freeze respected.
+
+**What changed**
+- `_projects/mansion/docs/CHARTER.md` (new; task path)
+- `COORDINATION.md`: claim taken and released within the run; this handoff.
+
+**How to verify**
+- `Test-Path _projects/mansion/docs/CHARTER.md` → `True`
+- `Select-String -Path _projects/mansion/docs/CHARTER.md -Pattern "default-allow|append-only|breathe.*gated|trusted-local"` → hits in §4
+- `git show HEAD --stat` → `_projects/mansion/docs/CHARTER.md` + `COORDINATION.md` only
+- Cross-check §3 table against `staging/mansion/ARCHITECTURE.md` §2 module ownership — names align
+
+**Open items**
+- Mirror `CHARTER.md` into the active sibling repo (`U:\mansion\docs\`) on a run scoped to that
+  tree — this run stayed inside the Conclave workspace root (consistent with the trust model it
+  chartered).
+- Cross-review task (charter + V1-LESSONS → first three milestones) can now start; §6 lists the
+  acceptance criteria it should check, including operator sign-off on the trust posture.
+
 ### claude — 2026-07-17 13:07 UTC — Freeze Conclave v1 to bugfix-only recorded on the board (completed)
 
 **Concrete conclusion**

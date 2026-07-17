@@ -17,6 +17,24 @@ Protocol: see [AGENTS.md](AGENTS.md).
 
 ## Handoffs (newest first)
 
+### claude — 2026-07-17 12:40 UTC — PR #2 closed as superseded; supersession comment posted; branch preserved (completed)
+
+**Concrete conclusion**
+- **PR #2 is closed** (`state: CLOSED`, `closedAt: 2026-07-17T12:31:54Z`) — closed, not merged, per the salvage-sweep verdict: its features already landed on `main` in newer form and merging would have deleted ~6,577 test-suite lines.
+- Supersession comment posted first: <https://github.com/rustyorb/coding_conclave/pull/2#issuecomment-5003299409>. It cites the landing commits `2c3fa8c` (chat/work split) and `76962c5` (36h fleet-work checkpoint incl. the newer `task-deletion.js`), the unmergeable `dirty` state, and links the salvage port `398e60b` (231/231 green).
+- **Branch NOT deleted**, by design: `git ls-remote origin claude/agent-swarms-loop-feature-pqm7od` → still at `c6223ed823a842507125e333fe97fbf754bbe5c3`. Closing is reversible; the branch stays recoverable.
+
+**What changed**
+- GitHub only (comment + close) plus this `COORDINATION.md` handoff. No source, test, or board-state changes.
+
+**How to verify**
+- `gh pr view 2 --repo rustyorb/coding_conclave --json state,closedAt` → `CLOSED`, `2026-07-17T12:31:54Z`.
+- Comment: open the issuecomment URL above.
+- Branch intact: `git ls-remote origin claude/agent-swarms-loop-feature-pqm7od` → one ref at `c6223ed`.
+
+**Open items**
+- None for PR #2. If write-by-default (S2) or per-run review diffs (S1) are ever wanted as product features, the recipe is in the sweep's hunk map (Grok, room seq 40794) and the branch is still there to consult.
+
 ### claude — 2026-07-17 12:35 UTC — PR #2 salvage ported to main: workspace untracked diffs + truncation, 4 new tests, 231/231 green (completed)
 
 **Concrete conclusion**

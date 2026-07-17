@@ -25,6 +25,8 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
 
+<!-- grok claim released 2026-07-17 15:10 UTC: Provision DEV disk /mnt/mansion — SAFETY GATE ABORT reconfirmed live (see handoff). -->
+
 <!-- codex claim released 2026-07-17: queued-chat report diagnosed read-only; no product edits under freeze. -->
 
 <!-- grok claim released 2026-07-17: Provision DEV disk /mnt/mansion — safety gate ABORT (see handoff). -->
@@ -39,6 +41,61 @@ stable also keeps its 232-test suite meaningful as a regression reference.
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### grok — 2026-07-17 15:10 UTC — Provision DEV disk and mount /mnt/mansion on Cyberclaw (blocked — safety gate)
+
+**State:** `blocked` (no remote writes; claim released)
+
+**Concrete conclusion**
+- Key-auth SSH still works: `ssh -o BatchMode=yes -o ConnectTimeout=10 mars@192.168.0.69` → host `cyberclaw`, user `mars`, `sudo -n true` → OK.
+- **SAFETY GATE ABORT — zero partition, mkfs, mount, fstab, chown, or chmod performed on Cyberclaw.**
+- Task requires a device matching **all** of: LABEL=`DEV`, **and** no `/` / `/boot` / EFI on that device; never select by size; abort if ambiguous.
+- Live match check fails every safe interpretation:
+  1. **No whole-disk LABEL=`DEV`.** Both disks have empty disk-level labels (`nvme0n1` 1.8T, `nvme1n1` 476.9G).
+  2. **Only LABEL=`DEV` is partition** `/dev/nvme0n1p3` (401.2G, NTFS, UUID=`A0B8277DB82750D8`).
+  3. **Parent device has OS mounts** — same disk `nvme0n1` carries `/` (`nvme0n1p4` ext4) and `/boot/efi` (`nvme0n1p5` vfat). Selecting the whole disk is forbidden by the EFI/root gate.
+  4. **Partition is not a blank spare:** FSTYPE=`ntfs`, already mounted at `/media/mars/DEV` (ntfs3, uid=1000), **110M used**; listing has `$RECYCLE.BIN`, `desktop.ini`, `System Volume Information`.
+  5. **`/mnt/mansion` is not mounted** and does not exist under `/mnt` (only `awm-models`, `obsidian`). No `mansion` line in `/etc/fstab`. Idempotent “already correct” path does **not** apply.
+- Reformatting `nvme0n1p3` would be a **data-destructive** act outside the “empty spare DEV disk” assumption; the prior operator choice matrix (A keep NTFS / B wipe to ext4 / C different volume) remains open.
+
+**lsblk -f evidence (disks; loops omitted; unchanged after — no writes)**
+```text
+NAME        FSTYPE FSVER LABEL       UUID                                 FSAVAIL FSUSE% MOUNTPOINTS
+nvme0n1
+├─nvme0n1p1
+├─nvme0n1p2 ntfs         AI          5A7EF3C97EF39C47                      613.7G    17% /media/mars/AI
+├─nvme0n1p3 ntfs         DEV         A0B8277DB82750D8                      401.1G     0% /media/mars/DEV
+├─nvme0n1p4 ext4   1.0               9caadf4d-b415-4a34-bd88-2708c5f8738d  139.2G    66% /
+├─nvme0n1p5 vfat   FAT32             B1F2-739D                                 1G     1% /boot/efi
+└─nvme0n1p6 ext4   1.0   Ouroboros   43c3f5d6-3b8a-4693-b421-5a6fc0b88dc9
+nvme1n1
+├─nvme1n1p1 vfat   FAT32 SYSTEM      B683-7355
+├─nvme1n1p2
+├─nvme1n1p3 ntfs         Windows     846883CB6883BB06
+├─nvme1n1p4 ntfs         WinRE tools 6228845828842D5B
+└─nvme1n1p5 ntfs         BIOS_RVY    72BE8674BE8630A1
+```
+
+**What changed**
+- `COORDINATION.md` — this handoff only.
+- **Zero changes on Cyberclaw.**
+
+**Operator must choose before any agent formats/mounts**
+| Option | Meaning | Risk |
+|--------|---------|------|
+| **A — Keep NTFS** | Remount or bind DEV at `/mnt/mansion` with `uid=1000,gid=1000` (or fstab by UUID `A0B8277DB82750D8`), **no mkfs** | Safe; preserves residual NTFS metadata |
+| **B — Reformat to ext4** | Explicit OK to wipe `nvme0n1p3` only, then `mkfs.ext4 -L mansion`, mount `/mnt/mansion`, fstab by new UUID, `chown mars:mars`, `chmod 755` | **Destroys** current NTFS on DEV |
+| **C — Different volume** | e.g. unmounted `Ouroboros` (`nvme0n1p6` ext4 233.1G) or a real empty disk | Needs explicit target + wipe OK if applicable |
+
+**How to verify (re-run safety inventory — read-only)**
+```powershell
+ssh -o BatchMode=yes -o ConnectTimeout=10 mars@192.168.0.69 "sudo -n true && lsblk -f -e 7 && findmnt /media/mars/DEV; findmnt /mnt/mansion; df -h /media/mars/DEV; ls -la /media/mars/DEV; ls -ld /mnt/mansion; grep mansion /etc/fstab || true"
+```
+
+**Open items**
+- Operator decision A / B / C (or equivalent) before re-dispatch.
+- After decision, re-dispatch mount task with that scope; agent must re-run safety checks before any write.
+- Gemini independent smoke test remains gated on a successful provision path.
 
 ### codex — 2026-07-17 15:07 UTC — Diagnose report that chat is queued and messages cannot be sent (completed)
 

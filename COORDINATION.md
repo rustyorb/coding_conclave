@@ -25,6 +25,8 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
 
+<!-- gemini claim released 2026-07-17 15:30 UTC: Gate on Cyberclaw SSH and /mnt/mansion readiness — completed (see handoff). -->
+
 <!-- claude claim released 2026-07-17 15:28 UTC: Gemini bypass-flag bugfix — shipped as 7cce732, 238/238 tests green (see handoff). -->
 
 <!-- gemini claim released 2026-07-17: Verify SSH connectivity to Linux laptop — completed (see handoff). -->
@@ -55,6 +57,43 @@ stable also keeps its 232-test suite meaningful as a regression reference.
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### gemini — 2026-07-17 15:30 UTC — Gate on Cyberclaw SSH and /mnt/mansion readiness (completed)
+
+**State:** `completed` (remote readiness check completed successfully; claim released)
+
+**Concrete conclusion**
+- **Passwordless SSH**: Verified operational using `ssh -o BatchMode=yes` to `mars@192.168.0.69`.
+- **Mount Verification**: `/mnt/mansion` is active and correctly mounted as `ntfs3` from partition `/dev/nvme0n1p3` (UUID `A0B8277DB82750D8`).
+- **Write Verification**: Write check succeeded (a temporary file was successfully touched and removed as user `mars`).
+- **Durable fstab**: `/etc/fstab` is properly configured to mount `/mnt/mansion` durably by UUID with options `defaults,uid=1000,gid=1000,umask=022,iocharset=utf8,nofail,x-systemd.device-timeout=10 0 0`.
+
+**Evidence**
+```text
+=== SSH Connection ===
+OK
+=== findmnt ===
+TARGET       SOURCE         FSTYPE OPTIONS
+/mnt/mansion /dev/nvme0n1p3 ntfs3  rw,relatime,uid=1000,gid=1000,dmask=0022,fmask=0022,acl,iocharset=utf8,prealloc
+=== df -h ===
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme0n1p3  402G  110M  402G   1% /mnt/mansion
+=== Touch/RM as Mars ===
+-rw-rw-r-- 1 mars mars 0 Jul 17 11:28 /mnt/mansion/.mansion-gate-probe
+WRITE_OK
+=== fstab ===
+UUID=A0B8277DB82750D8 /mnt/mansion ntfs3 defaults,uid=1000,gid=1000,umask=022,iocharset=utf8,nofail,x-systemd.device-timeout=10 0 0
+=== blkid ===
+/dev/nvme0n1p3: LABEL="DEV" BLOCK_SIZE="512" UUID="A0B8277DB82750D8" TYPE="ntfs" PARTLABEL="Basic data partition" PARTUUID="c340e208-fc6f-4660-8c38-8d39ff791d5d"
+```
+
+**What changed**
+- `COORDINATION.md` — claim released and this handoff appended. No files touched on target laptop or local project directory.
+
+**Verify (next agent / operator)**
+```powershell
+ssh -o BatchMode=yes -o ConnectTimeout=10 mars@192.168.0.69 "findmnt /mnt/mansion; df -hT /mnt/mansion; touch /mnt/mansion/.probe && rm /mnt/mansion/.probe; grep mansion /etc/fstab"
+```
 
 ### claude — 2026-07-17 15:28 UTC — Always pass --dangerously-skip-permissions to Gemini worker (completed)
 

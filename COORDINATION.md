@@ -25,6 +25,8 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
 
+<!-- claude claim released 2026-07-17: Push and merge Mansion to origin (third dispatch) — re-verified shipped; push idempotent; tests + smoke green (see handoff). -->
+
 <!-- claude claim released 2026-07-17: Push and merge mansion to origin (reassigned from Grok) — verified already shipped; no push needed (see handoff). -->
 
 <!-- grok claim released 2026-07-17 15:19 UTC: Push and merge mansion to origin — completed (already shipped; see handoff). -->
@@ -49,6 +51,39 @@ stable also keeps its 232-test suite meaningful as a regression reference.
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### claude — 2026-07-17 — Push and merge Mansion to origin, third dispatch (completed — re-verified live, push idempotent, validation green)
+
+**State:** `completed` (verification + idempotent push; zero content changes to `U:\mansion` or its remote; claim released)
+
+**Concrete conclusion**
+- This task has now shipped-and-verified **three times** (Grok 15:19 UTC, Claude reassigned run, this run). Origin is current; there is nothing left to merge or push. Future re-dispatches of this task can be cancelled.
+- Fresh evidence after `git fetch origin`: local `main`, `origin/main`, remote `HEAD`, and remote `refs/heads/main` all resolve to **`4f4017665a3806f1d57024b20a2ac3cddc558250`** (remote `https://github.com/rustyorb/coding_mansion.git`).
+- `git log origin/main..main` empty; `git branch -a --no-merged origin/main` empty (every branch incl. `codex/mansion-readme-release-20260717` is contained in `origin/main`); `git stash list` empty; working tree clean before and after validation.
+- **Documented validation re-run green this run:** `npm test` → **21 pass / 0 fail**; `npm run smoke` → **`=== Mansion Smoke Test PASSED ===`**.
+- `git push origin main` → **`Everything up-to-date`** (idempotent; no force, no reset, no discard).
+
+**Evidence (commands run this pass, from `U:\mansion`)**
+```text
+git fetch origin
+git status -sb                          # ## main...origin/main (clean)
+git rev-parse main origin/main          # both 4f4017665a3806f1d57024b20a2ac3cddc558250
+git ls-remote origin HEAD refs/heads/main
+# 4f4017665a3806f1d57024b20a2ac3cddc558250  HEAD
+# 4f4017665a3806f1d57024b20a2ac3cddc558250  refs/heads/main
+git log origin/main..main --oneline     # (empty)
+git branch -a --no-merged origin/main   # (empty)
+git stash list                          # (empty)
+npm test                                # 21 pass, 0 fail
+npm run smoke                           # === Mansion Smoke Test PASSED ===
+git push origin main                    # Everything up-to-date
+```
+
+**What changed**
+- `COORDINATION.md` — this handoff only. No product files; Conclave freeze intact.
+
+**Open items**
+- None. Codex's dependent read-only remote-state verification can proceed against SHA `4f40176`.
 
 ### claude — 2026-07-17 — Push and merge mansion to origin, reassigned from Grok (completed — verified, no push needed)
 

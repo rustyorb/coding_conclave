@@ -25,6 +25,8 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
 
+<!-- grok claim released 2026-07-17 15:19 UTC: Push and merge mansion to origin — completed (already shipped; see handoff). -->
+
 <!-- grok claim released 2026-07-17 15:20 UTC: Finish Cyberclaw foundation — completed (see handoff). -->
 
 <!-- gemini claim released 2026-07-17 15:15 UTC: Smoke-test /mnt/mansion and report readiness — FAILED: mountpoint does not exist (see handoff). -->
@@ -45,6 +47,71 @@ stable also keeps its 232-test suite meaningful as a regression reference.
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### grok — 2026-07-17 15:19 UTC — Push and merge mansion to origin (completed)
+
+**State:** `completed` (no new push required; origin already current; claim released)
+
+**Concrete conclusions**
+1. **`U:\mansion` is already on origin.** Local `main`, `origin/main`, and remote `HEAD`/`refs/heads/main` all share SHA **`4f4017665a3806f1d57024b20a2ac3cddc558250`**.
+2. **Working tree clean** on `main`. `git push origin main` → **Everything up-to-date**. No force-push, no hard reset, no discard.
+3. **Default branch is `main`** (remote HEAD). Merge/FF to default already done by prior ship; tip includes README + SearXNG verification docs.
+4. **Green verification:** `npm test` → **21/21 pass**; `npm run smoke` → **PASSED**.
+5. **Local hygiene only:** stale local `master` was **fast-forwarded** `829bc54 → 4f40176` (ancestor of `main`; tracks `origin/main`). No remote `master` branch; no force.
+6. **`coding_conclave`:** still frozen; this handoff only. Product commits for Mansion live in `U:\mansion` (`https://github.com/rustyorb/coding_mansion.git`), not Conclave `src/`.
+7. **Side branch (leave alone):** `codex/mansion-readme-release-20260717` @ `829bc54` already tracks its origin counterpart (behind `main` by design of prior README merge).
+
+**Evidence**
+```text
+# From U:\mansion after git fetch
+git status -sb
+# → ## main...origin/main
+
+git rev-parse main origin/main
+# → 4f4017665a3806f1d57024b20a2ac3cddc558250
+# → 4f4017665a3806f1d57024b20a2ac3cddc558250
+
+git ls-remote origin HEAD refs/heads/main
+# → 4f4017665a3806f1d57024b20a2ac3cddc558250	HEAD
+# → 4f4017665a3806f1d57024b20a2ac3cddc558250	refs/heads/main
+
+git log origin/main..main --oneline
+# → (empty)
+
+git push origin main
+# → Everything up-to-date
+
+npm test   # 21 pass, 0 fail
+npm run smoke  # === Mansion Smoke Test PASSED ===
+
+git log -1 --oneline -- README.md
+# → 4f40176 docs: document live SearXNG LAN client verification status
+```
+
+**Tip commit log (recent)**
+```text
+4f40176 docs: document live SearXNG LAN client verification status
+829bc54 docs: distinguish Mansion scaffold from planned host
+537a664 docs: refresh README for modular monolith and export foundation
+0984d28 docs: add living-room surface brief
+9af82cb docs(research): research/critic loop contract + provenance builders
+13f05fa feat(research): thin SearXNG JSON client for LAN research loops
+```
+
+**Open items**
+- None for push/merge. README + coherent commits already on `origin/main`.
+- Optional: delete obsolete remote feature branch `codex/mansion-readme-release-20260717` only if operator/Codex wants cleanup (not done here; foreign branch).
+
+**Verify (next agent / operator)**
+```powershell
+cd U:\mansion
+git fetch origin
+git status -sb
+git rev-parse main origin/main
+git ls-remote origin HEAD refs/heads/main
+npm test
+npm run smoke
+```
 
 ### gemini — 2026-07-17 15:30 UTC — Connect Hermes to Mansion (completed)
 

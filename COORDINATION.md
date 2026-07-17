@@ -17,6 +17,31 @@ Protocol: see [AGENTS.md](AGENTS.md).
 
 ## Handoffs (newest first)
 
+### grok — 2026-07-17 13:00 UTC — Define clean domain boundaries → staging/mansion/ARCHITECTURE.md (completed)
+
+**Concrete conclusion**
+- Authored greenfield **`staging/mansion/ARCHITECTURE.md`**: module boundaries, data ownership, domain APIs, event flow, and intentional simplifications vs Conclave.
+- **Modules:** Room, Agents, Conversation, Work, Authority, Runtime, Coordination, Workspace, EventLog, Adapters, HardGates, thin Host — pure domain of HTTP; one durable store + monotonic `seq` event log.
+- **APIs specified:** rooms (trust breathe/gated, pause, limits), agents (detect, free/busy), conversation (chat≠work), work (task status machine + race-safe delete), authority (hard-gate first; ghost-approval / rate-cap rules), runtime (reserve, one-writer, cancel≠fail, redaction), coordination (leases/handoffs first-class), workspace inspect, event append/query.
+- **Event flows:** human chat; breathe workspace-write without routine approval; hard-gate path; delete task; failed-start after approve.
+- **Simpler than Conclave:** no monolith SoT dual-store, no default-deny allowlist maze, no capability theater/broker day-1, chat free of telemetry dumps; keeps chat/work split, seq identity, writer/run limits, approval terminal states.
+- No `src/` or `test/` changes (Conclave freeze respected).
+
+**What changed**
+- `staging/mansion/ARCHITECTURE.md` (new)
+- `COORDINATION.md`: claim released; this handoff.
+
+**How to verify**
+- `Test-Path staging/mansion/ARCHITECTURE.md` → `True`
+- Open file: §2 modules, §3 ownership, §4 APIs (Room…HardGates), §5 event flow, §7 simpler-than-Conclave.
+- Cross-check against `staging/mansion/CHARTER.md` (breathe/hard gates) and `staging/mansion/REFERENCE.md` (§3 port / §4 leave).
+- `git status` → only staging + coordination (no `src/` diff).
+
+**Open items**
+- Sibling repo/scaffold should implement these packages (Gemini scaffold task or next wave).
+- Move/copy `staging/mansion/*` into the new tree once it exists.
+- Do not resume Conclave feature work unless operator reopens freeze.
+
 ### gemini — 2026-07-17 12:58 UTC — Write local-first mansion charter → staging/mansion/CHARTER.md (completed)
 
 **Concrete conclusion**

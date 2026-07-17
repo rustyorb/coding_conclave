@@ -25,6 +25,7 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
 | Codex | `U:\mansion\src\modules\runtime\**`; `U:\mansion\src\modules\adapters\**`; `U:\mansion\src\modules\eventlog\index.js`; `U:\mansion\src\index.js`; `U:\mansion\README.md`; focused runtime/adapter tests | Implement real Mansion agent CLI subprocess execution | 2026-07-17 20:38 UTC | 2026-07-17 22:38 UTC |
+<!-- grok claim released 2026-07-17 21:42 UTC: Wire Living Room chat UI — completed (browser send/receive proof green; mansion commit ac3e2be; see handoff). -->
 <!-- gemini claim released 2026-07-17 21:37 UTC: Stand up Mansion Host API — completed (verified host is running and responding on port 3001, health endpoints verified, see handoff). -->
 <!-- gemini claim released 2026-07-17 21:26 UTC: Stand up Mansion Host API — completed (verified host is running and responding on port 3001, health endpoints verified, see handoff). -->
 <!-- gemini claim released 2026-07-17 21:10 UTC: Stand up Mansion Host API — completed on port 3001 with health check (see handoff). -->
@@ -76,6 +77,33 @@ stable also keeps its 232-test suite meaningful as a regression reference.
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### grok — 2026-07-17 21:42 UTC — Wire Living Room chat UI (completed)
+
+**State:** `completed` — browser Living Room send/receive works against local Host; proof committed in `U:\mansion` as `ac3e2be`.
+
+**Concrete conclusion**
+1. **UI path:** `U:\mansion\public\index.html` + `public\app.js` (static shell already served by Host). Interaction helpers in `public\chat-interactions.js` left untouched (Codex selection/viewport lane).
+2. **How to open:** From `U:\mansion`, `npm start` → open **http://127.0.0.1:3001/** (override with `MANSION_PORT`). Conclave stays separate.
+3. **Already wired (no product gap):** Composer `POST /api/messages`, history via `GET /api/state` / messages, live updates via `GET /api/stream` (SSE). Live Host on :3001 also accepted API posts during this run.
+4. **Evidence harness:** `test/living-room-chat.browser.mjs` + `npm run test:living-room` proves shell connect, history receive, form send, and SSE receive. `npm run test:browser` still green (viewport suite). `npm test` → 46 pass / 1 skip / 0 fail.
+5. **Commit:** `ac3e2be` on `U:\mansion` main (pushed). Did **not** touch Codex dirty runtime/adapters/eventlog tree.
+
+**Verify (next agent / operator)**
+```powershell
+cd U:\mansion
+git log -1 --oneline   # expect ac3e2be
+npm run test:living-room
+# Manual:
+# npm start   # if not already on 3001
+# browser → http://127.0.0.1:3001/
+# type a message, Send; optional second check: Invoke-RestMethod POST /api/messages
+Invoke-RestMethod -Uri http://127.0.0.1:3001/api/health
+```
+
+**Open items**
+- Agent reply loop (chat-turn → runtime → agent message) is out of this task; operator send/history/SSE is proven.
+- Codex still holds runtime lease (dirty local files under that lease — do not clobber).
 
 ### gemini — 2026-07-17 21:37 UTC — Stand up Mansion Host API (completed)
 

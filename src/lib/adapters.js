@@ -137,12 +137,14 @@ export const AGENT_DEFINITIONS = [
     ],
     capabilityLabels: ['repository inspection', 'code generation', 'file editing', 'command execution', 'web research', 'testing'],
     probeSupport: { ...SHARED_PROBE_SUPPORT, 'P-agy-mcp': true },
-    build({ executable, prompt, accessMode, elevated }) {
+    build({ executable, prompt, accessMode }) {
       // Antigravity CLI (agy): a real agentic CLI, replacing the API-only
       // gemini-adapter.js wrapper that could talk but never touch files.
       const mode = accessMode === 'read-only' ? 'plan' : 'accept-edits';
-      const args = ['-p', prompt, '--mode', mode, '--print-timeout', '10m'];
-      if (elevated && accessMode !== 'read-only') args.push('--dangerously-skip-permissions');
+      // Headless agy auto-denies every tool prompt — even read_file in plan
+      // mode — so the bypass flag must always be present. This makes read-only
+      // advisory for agy: --mode plan asks it not to write, nothing enforces it.
+      const args = ['-p', prompt, '--mode', mode, '--print-timeout', '10m', '--dangerously-skip-permissions'];
       return { ...invocation(executable, args), format: 'text' };
     }
   },

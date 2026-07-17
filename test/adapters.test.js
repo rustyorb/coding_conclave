@@ -43,10 +43,14 @@ test('Gemini agent definition launches the Antigravity CLI with mode mapped from
   assert.ok(readOnly.args.includes('-p'));
   assert.ok(readOnly.args.includes('Check this'));
   assert.deepEqual(readOnly.args.slice(readOnly.args.indexOf('--mode'), readOnly.args.indexOf('--mode') + 2), ['--mode', 'plan']);
+  // Headless agy auto-denies tool prompts even in plan mode, so the bypass
+  // flag is unconditional — including read-only runs.
+  assert.ok(readOnly.args.includes('--dangerously-skip-permissions'));
   const write = buildAgentInvocation('gemini', {
     executable: 'agy', prompt: 'Fix it', workspace: process.cwd(), accessMode: 'workspace-write'
   });
   assert.ok(write.args.includes('accept-edits'));
+  assert.ok(write.args.includes('--dangerously-skip-permissions'));
 });
 
 test('resolveExecutable falls back to extra directories when the CLI is off PATH', async () => {

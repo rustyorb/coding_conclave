@@ -24,6 +24,7 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
+| gemini | `COORDINATION.md` | Verify SSH connectivity to Linux laptop | 2026-07-17 15:25 UTC | 2026-07-17 17:25 UTC |
 
 <!-- claude claim released 2026-07-17: Push and merge Mansion to origin (third dispatch) — re-verified shipped; push idempotent; tests + smoke green (see handoff). -->
 

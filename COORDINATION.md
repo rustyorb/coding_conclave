@@ -17,6 +17,31 @@ Protocol: see [AGENTS.md](AGENTS.md).
 
 ## Handoffs (newest first)
 
+### claude — 2026-07-17 10:25 UTC — Gemini stall triage: chat lane alive, tool use broken by agy 1.1.3 headless permission deny; no backfill eligible (completed)
+
+**Concrete conclusion**
+- **Gemini is not non-responsive** — the backfill trigger was not met. Four chat turns today (09:57, 09:59, 10:01, 10:03 UTC) all completed in ≤12s, three with substantive content. The continuity condition ("≥1 agent active until heartbeat live") is already satisfied: heartbeat live per Grok's 10:15 handoff, Grok active on `task_7019ff5b`.
+- **Root cause of Gemini's "no output produced" turns:** the operator's ~06:19 reinstall put **agy 1.1.3** back on PATH (`agy --version` → 1.1.3 — Gemini's claimed 1.1.2 pin did not hold). Antigravity 1.1.3 (internal name "Jetski") **soft-denies every tool confirmation in headless print mode** unless an allow-rule exists — CLI log `cli-20260717_061941.log`: `Print mode: soft-denying tool confirmation "Bash" at step 12`. Reproduced with the adapter's exact invocation from `U:\coding_conclave`: `agy -p "Read the file package.json …" --mode plan --print-timeout 2m` → `jetski: no output produced — a tool required the "command" permission that headless mode cannot prompt for, so it was auto-denied.` Net effect: plain-text chat works; **any run needing file reads or commands emits only the deny notice** — every tool-using Gemini task will fail until fixed.
+- **Where the fix lives:** `C:\Users\Robotics\.gemini\antigravity-cli\settings.json` (confirmed the loaded config — its `model` matches the CLI log). It has no `permissions` block and `trustedWorkspaces` contains only `C:\Users\Robotics` — **`U:\coding_conclave` is not trusted**. That file is outside this run's workspace-write scope, so it was **not modified**. Operator options (pick one):
+  1. Add allow-rules: `"permissions": { "allow": ["read_file(U:\\coding_conclave\\**)"] }` (syntax per the CLI's own error example `read_file(<target>)`), and consider adding `U:\\coding_conclave` to `trustedWorkspaces`.
+  2. Roll back to agy 1.1.2 and pin with env `AGY_CLI_DISABLE_AUTO_UPDATE=true` (env var confirmed present in the 1.1.3 binary).
+  3. Dispatch Gemini runs elevated — the adapter already passes `--dangerously-skip-permissions` when elevated (`src/lib/adapters.js:145`). Broadest hammer: auto-approves **all** tools including commands.
+- **No backfill item taken — explicit reassignment note:** ready backlog is only `task_8c331979` (operator card "install a repo in the _projects folder up one level" — targets a path outside the workspace, needs elevated dispatch plus clarification of *which* repo; assigned to gemini and will fail fast with the jetski deny if drained now) and `task_9184ba95` (deletion/restart gates — excluded from this task's scope). Neither is a chat/queue-polish or docs item, so there was nothing eligible to take.
+- `agy agents` hung >120s in this run (probe killed cleanly; no orphan left by me). Pre-existing orphan `agy` PID **13336** (started 06:16:54, ~0 CPU) matches the operator's "stalls loading from the cli" report — operator cleanup candidate, do not kill blindly.
+
+**What changed**
+- `COORDINATION.md` only (this handoff). No source, test, board-state, or agent-config mutations.
+
+**How to verify**
+- `agy --version` → `1.1.3`.
+- From `U:\coding_conclave`: `agy -p "Read the file package.json in the current directory and report only its name field." --mode plan --print-timeout 2m` → the `jetski: no output produced …` deny notice, no file content.
+- `Select-String 'soft-denying' C:\Users\Robotics\.gemini\antigravity-cli\log\cli-20260717_061941.log` → the Print-mode deny line.
+- Gemini chat-lane liveness: `/api/state` → gemini chatTurns created 09:57/09:59/10:01/10:03 today, all `completed` within ~12s.
+
+**Open items**
+- **Operator decision required:** pick one of the three fix options above before Gemini can run any tool-using task (including its ready card `task_8c331979`).
+- `task_8c331979` also needs scope clarification (which repo? destination is outside the workspace) regardless of which agent runs it.
+
 ### grok — 2026-07-17 10:15 UTC — Heartbeat live only after clean backlog: gates pass, silent success tick proven (completed)
 
 **Concrete conclusion**

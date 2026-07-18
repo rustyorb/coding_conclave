@@ -25,6 +25,8 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
 | Codex | `U:\mansion\src\modules\runtime\**`; `U:\mansion\src\modules\adapters\**`; `U:\mansion\src\modules\eventlog\index.js`; `U:\mansion\src\index.js`; `U:\mansion\README.md`; focused runtime/adapter tests | Implement real Mansion agent CLI subprocess execution | 2026-07-17 20:38 UTC | 2026-07-17 22:38 UTC |
+<!-- grok claim released 2026-07-18 01:06 UTC: Give the Living Room a resident responder — completed (see handoff). -->
+<!-- grok claim released 2026-07-18 01:10 UTC: Browser-check house-sitter in Living Room — completed (see handoff). -->
 <!-- gemini claim released 2026-07-18 01:00 UTC: Add Living Room house-sitter responder — completed (see handoff). -->
 <!-- gemini claim released 2026-07-17 21:42 UTC: E2E verify local Mansion chat — completed (see handoff). -->
 <!-- grok claim released 2026-07-17 21:42 UTC: Wire Living Room chat UI — completed (browser send/receive proof green; mansion commit ac3e2be; see handoff). -->
@@ -79,6 +81,60 @@ stable also keeps its 232-test suite meaningful as a regression reference.
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### grok — 2026-07-18 01:06 UTC — Give the Living Room a resident responder (completed)
+
+**State:** `completed` — runnable external Living Room resident process watches Host API messages and posts contextual agent replies within ~5s; live API transcript captured; pushed to `origin/main` as `2730fc9`.
+
+**Concrete conclusion**
+1. **Resident process:** `U:\mansion\scripts\resident.mjs` (`npm run resident`). Modes: `auto` (SSE + safety poll), `poll`, `sse`. Default sourceId: `Living Room Resident`.
+2. **Host API:** `POST /api/messages` accepts optional `source` (`operator`|`agent`|`system`) and `sourceId` so external residents can post as agents. In-process House Sitter is **opt-in** via `MANSION_HOUSE_SITTER=1` / `houseSitter: true` (avoids double replies when the resident is running).
+3. **Start / stop**
+   - Host: `cd U:\mansion; npm start` (port 3001)
+   - Resident: `cd U:\mansion; npm run resident` — stop with Ctrl+C
+   - Full knobs: `U:\mansion\docs\RESIDENT.md`
+4. **Evidence transcript** (`U:\mansion\docs\RESIDENT-TRANSCRIPT.json`):
+   - **operator** seq 25 `msg-1cf6ba81-…`: `Hello Living Room — is the resident home? proof resident-live-proof-1784336747614`
+   - **Living Room Resident** seq 26 `msg-131c1d69-…` replyTo operator: greets + echoes proof token (poll mode, under 5s)
+5. **Tests:** `node --test test/resident.test.js test/host.test.js` → 13/13 pass (including live child-process resident within 5s).
+6. **Codex lease respected:** did not touch `runtime/` / `adapters/` / `eventlog` / `index.js` / `README.md`. Left their dirty tree alone.
+7. **Live now:** Host + poll-mode resident were left running in this session against 3001 for Gemini’s browser verify. If they died, restart with the commands above.
+
+**Verify (next agent / Gemini)**
+```powershell
+curl.exe -s http://127.0.0.1:3001/api/health
+# If no resident process: cd U:\mansion; npm run resident
+Invoke-RestMethod -Method POST -Uri http://127.0.0.1:3001/api/messages -ContentType "application/json" -Body '{"content":"Gemini verify: anyone home?"}'
+Start-Sleep -Seconds 2
+(Invoke-RestMethod "http://127.0.0.1:3001/api/messages?limit=500").messages | Select-Object -Last 4 | Format-List source,sourceId,content,replyToMessageId
+# UI: http://127.0.0.1:3001/ — expect Living Room Resident bubble without full refresh
+cd U:\mansion; node --test test/resident.test.js
+```
+
+### grok — 2026-07-18 01:10 UTC — Browser-check house-sitter in Living Room (completed)
+
+**State:** `completed` — live headless Chromium check against Host+UI on port 3001; House Sitter reply appears in the feed without navigation or shell breakage.
+
+**Concrete conclusion**
+1. **URL:** `http://127.0.0.1:3001/` (Living Room shell; `/living-room` is 404 — root is correct).
+2. **Health:** `GET /api/health` → `{ status: "ok", mansion: "ready" }` (Host PID 22184, `node src/index.js`).
+3. **Browser path:** Headless Chrome via CDP opened the UI, waited for SSE `connection=connected` / text "Live", submitted via `#message-form` / `#message-input`, observed feed growth 10→12 with no `beforeunload`, same href/title, composer form still present, input cleared.
+4. **Sample exchange (UI + API matched):**
+   - **User (operator, seq 12):** `recliner browser check 1784336413469` → `msg-ba908d10-ec72-429d-9126-069a94e2c3d0`
+   - **House Sitter (agent, seq 13):** `Hello! Recliner house-sitter here. Stacking recliners and echoing you: "recliner browser check 1784336413469"` → `msg-e12cd12b-7451-4e99-a94b-7c43672538ac` (`replyToMessageId` = user id)
+5. **Failures:** none on the successful run. First draft of the check false-positived because the proof token contained the substring `house-sitter` and matched the operator bubble; re-ran with a neutral token and strict agent/author matching — **pass**.
+6. **No product code edits** (freeze + Codex runtime lease respected). Only `COORDINATION.md` updated.
+
+**Verify (next agent / operator)**
+```powershell
+# Health
+curl.exe -s http://127.0.0.1:3001/api/health
+# API round-trip (~1s sitter delay)
+Invoke-RestMethod -Method POST -Uri http://127.0.0.1:3001/api/messages -ContentType "application/json" -Body '{"content":"manual sitter ping"}'
+Start-Sleep -Seconds 2
+(Invoke-RestMethod "http://127.0.0.1:3001/api/messages?limit=20").messages | Select-Object -Last 4 | Format-List source,sourceId,content,replyToMessageId
+# UI: open http://127.0.0.1:3001/ in a browser, type a message, Send — expect a House Sitter bubble ~1s later without full page reload
+```
 
 ### gemini — 2026-07-18 01:00 UTC — Add Living Room house-sitter responder (completed)
 

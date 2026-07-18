@@ -25,6 +25,7 @@ stable also keeps its 232-test suite meaningful as a regression reference.
 | Agent | Files / area | Task | Claimed at (UTC) | Lease expiry (UTC) |
 |-------|--------------|------|------------------|--------------------|
 | Codex | `U:\mansion\src\modules\runtime\**`; `U:\mansion\src\modules\adapters\**`; `U:\mansion\src\modules\eventlog\index.js`; `U:\mansion\src\index.js`; `U:\mansion\README.md`; focused runtime/adapter tests | Implement real Mansion agent CLI subprocess execution | 2026-07-17 20:38 UTC | 2026-07-17 22:38 UTC |
+<!-- gemini claim released 2026-07-18 01:25 UTC: Verify Mansion presence from the operator's seat — completed (see handoff). -->
 <!-- grok claim released 2026-07-18 01:06 UTC: Give the Living Room a resident responder — completed (see handoff). -->
 <!-- grok claim released 2026-07-18 01:10 UTC: Browser-check house-sitter in Living Room — completed (see handoff). -->
 <!-- gemini claim released 2026-07-18 01:00 UTC: Add Living Room house-sitter responder — completed (see handoff). -->
@@ -81,6 +82,34 @@ stable also keeps its 232-test suite meaningful as a regression reference.
      gemini-adapter.js intentionally NOT deleted yet — awaits a live agy run to confirm the swap. -->
 
 ## Handoffs (newest first)
+
+### gemini — 2026-07-18 01:25 UTC — Verify Mansion presence from the operator's seat (completed)
+
+**State:** `completed` — verified Mansion presence E2E from a real browser UI using headless Chromium. Sent a message, verified the resident's reply rendered in the feed live (without a manual page refresh), and captured a screenshot.
+
+**Concrete conclusion**
+1. **Verification Test Script:** Created and executed `test/gemini-live-verify.mjs` inside `U:\mansion` which:
+   - Validated that the Host server on port 3001 is healthy.
+   - Spawned a real Chrome browser session using CDP.
+   - Navigated to `http://127.0.0.1:3001/` and verified successful connection to the SSE stream.
+   - Injected a JavaScript verification flag `window.__geminiNoRefresh = true` to prove the feed updates asynchronously.
+   - Sent a message through the Composer form: `"Hello resident! Are you home? proof-token: verify-token-<timestamp>"`.
+   - Verified that the sent message immediately rendered in the DOM (`msg-9490ca2c-0957-4748-b5b9-07ed0080a900`).
+   - Verified that the `Living Room Resident` responded within ~1-2 seconds with greeting and echo, rendering dynamically in the DOM (`msg-ba9d8441-1646-4870-8e1b-85501085e5bf`).
+   - Confirmed `window.__geminiNoRefresh` was still `true`, asserting no reload/refresh occurred.
+   - Captured a PNG screenshot of the browser viewport showing the active conversation.
+2. **Evidence Saved:**
+   - Screenshot saved directly to the conversation artifacts directory at: [gemini-verify-screenshot.png](file:///C:/Users/Robotics/.gemini/antigravity-cli/brain/55329e52-1a7c-4d59-9850-b5b77c1508c0/gemini-verify-screenshot.png)
+3. **Tests:** All 52 unit/integration tests in the Mansion test suite pass successfully (`npm test`).
+4. **Mansion Processes:** Mansion Host (PID 4368) and the external Resident loop (PID 17024) remain running in the background.
+
+**Verify (next agent / operator)**
+- View the captured screenshot: [gemini-verify-screenshot.png](file:///C:/Users/Robotics/.gemini/antigravity-cli/brain/55329e52-1a7c-4d59-9850-b5b77c1508c0/gemini-verify-screenshot.png)
+- Run the verify script again:
+  ```powershell
+  cd U:\mansion
+  node test/gemini-live-verify.mjs
+  ```
 
 ### grok — 2026-07-18 01:06 UTC — Give the Living Room a resident responder (completed)
 
